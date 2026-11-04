@@ -56,7 +56,7 @@ export const readFilesTool: Tool = {
         },
         maxCharsPerFile: {
           type: "integer",
-          description: "Maximum characters per file. Default: 12000, max: 100000.",
+          description: "Maximum characters returned for each file.", default: 12000,
         },
       },
       required: ["paths"],
@@ -70,6 +70,7 @@ export const readFilesTool: Tool = {
     const perFile = readOptionalInt(input, "maxCharsPerFile", 12_000, 500, 100_000);
     const totalLimit = Math.max(1_000, context.config.tools.maxOutputChars);
     const sections: string[] = [];
+    const readPaths: string[] = [];
     let used = 0;
 
     for (const requested of paths) {
@@ -85,11 +86,15 @@ export const readFilesTool: Tool = {
         const section = `===== ${relativeDisplay(context.cwd, absolute)} =====\n${clipped}`;
         if (used + section.length > totalLimit) {
           const remaining = Math.max(0, totalLimit - used);
-          if (remaining > 80) sections.push(`${section.slice(0, remaining - 32)}\n… total output limit reached`);
+          if (remaining > 80) {
+            sections.push(`${section.slice(0, remaining - 32)}\n… total output limit reached`);
+            readPaths.push(absolute);
+          }
           else sections.push("… total output limit reached");
           break;
         }
         sections.push(section);
+        readPaths.push(absolute);
         used += section.length;
       } catch (error) {
         const section = `===== ${requested} =====\nError: ${(error as Error).message}`;
@@ -97,7 +102,7 @@ export const readFilesTool: Tool = {
         used += section.length;
       }
     }
-    return { ok: true, output: sections.join("\n\n") };
+    return { ok: true, readPaths, output: sections.join("\n\n") };
   },
 };
 
@@ -112,13 +117,18 @@ export const editFileTool: Tool = {
         path: { type: "string", description: "Existing file path." },
         oldText: { type: "string", description: "Exact text to replace. Must not be empty." },
         newText: { type: "string", description: "Replacement text; may be empty to remove oldText." },
-        replaceAll: { type: "boolean", description: "Replace every occurrence. Default: false." },
+        replaceAll: { type: "boolean", description: "Replace every occurrence instead of one unique match.", default: false },
       },
       required: ["path", "oldText", "newText"],
       additionalProperties: false,
     },
     safe: false,
     summary: (input) => (typeof input.path === "string" ? input.path : "(file)"),
+    example: {
+      path: "src/file.js",
+      oldText: "export function value() {\n  return 1;\n}",
+      newText: "export function value() {\n  return 2;\n}",
+    },
   },
   async run(input, context): Promise<ToolResult> {
     const requested = pathArg(input);
@@ -269,7 +279,7 @@ export const deleteDirectoryTool: Tool = {
       type: "object",
       properties: {
         path: { type: "string", description: "Directory path." },
-        recursive: { type: "boolean", description: "Delete all contents. Default: false." },
+        recursive: { type: "boolean", description: "Delete all directory contents recursively.", default: false },
       },
       required: ["path"],
       additionalProperties: false,

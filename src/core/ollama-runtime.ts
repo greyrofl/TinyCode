@@ -29,7 +29,7 @@ export function isLocalOllamaUrl(baseUrl: string): boolean {
 }
 
 async function powershell(script: string): Promise<string> {
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], {
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -110,7 +110,9 @@ export class OllamaRuntime {
       ...(this.config.parallel !== null ? { OLLAMA_NUM_PARALLEL: String(this.config.parallel) } : {}),
     };
     this.child = this.dependencies.spawnServer ? this.dependencies.spawnServer(env) : spawn("ollama", ["serve"], {
-      detached: true,
+      // Windows detached processes allocate a separate console. Ignored stdio
+      // and unref let the server outlive TinyCode without requesting one.
+      detached: process.platform !== "win32",
       windowsHide: true,
       stdio: "ignore",
       env,

@@ -82,9 +82,9 @@ export const gitDiffTool: Tool = {
     parameters: {
       type: "object",
       properties: {
-        staged: { type: "boolean", description: "Show staged changes. Default: false." },
+        staged: { type: "boolean", description: "Show staged rather than unstaged changes.", default: false },
         path: { type: "string", description: "Optional path relative to cwd." },
-        contextLines: { type: "integer", description: "Diff context lines. Default: 3, max: 20." },
+        contextLines: { type: "integer", description: "Surrounding diff lines (0-20).", default: 3 },
       },
       required: [],
       additionalProperties: false,
@@ -110,7 +110,7 @@ export const gitLogTool: Tool = {
     parameters: {
       type: "object",
       properties: {
-        limit: { type: "integer", description: "Commit count. Default: 15, max: 100." },
+        limit: { type: "integer", description: "Maximum recent commits (1-100).", default: 15 },
         path: { type: "string", description: "Optional path history." },
       },
       required: [],
@@ -135,7 +135,7 @@ export const gitShowTool: Tool = {
     parameters: {
       type: "object",
       properties: {
-        ref: { type: "string", description: "Commit/ref. Default: HEAD." },
+        ref: { type: "string", description: "Git commit or ref to inspect.", default: "HEAD" },
         path: { type: "string", description: "Optional file path. With path, returns ref:path content." },
       },
       required: [],

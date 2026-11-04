@@ -181,7 +181,7 @@ function renderTui(
     busy,
     currentModel: session.meta.model,
     toolsEnabled: true,
-    toolCount: 26,
+    toolCount: 28,
     toolDefinitions: createDefaultTools().definitions(),
     currentThinking: "off",
     contextLimit: 8192,
@@ -488,13 +488,11 @@ class ScriptedProvider implements Provider {
     this.requests.push(options);
     const turn = this.turn++;
     if (turn === 0) {
-      yield { type: "reasoning", text: "I should replace the file." };
-      yield {
-        type: "text",
-        text:
-          'I will replace it.\n<tool_call>{"name":"replace_file","arguments":{"path":"agent.txt","content":"new\\n"}}</tool_call>',
-      };
+      yield { type: "reasoning", text: "I should read the file first." };
+      yield { type: "text", text: '<tool_call>{"name":"read_file","arguments":{"path":"agent.txt"}}</tool_call>' };
     } else if (turn === 1) {
+      yield { type: "text", text: '<tool_call>{"name":"replace_file","arguments":{"path":"agent.txt","content":"new\\n"}}</tool_call>' };
+    } else if (turn === 2) {
       yield { type: "text", text: '<tool_call>{"name":"read_file","arguments":{"path":"agent.txt"}}</tool_call>' };
     } else {
       yield { type: "text", text: "Done after verification." };
@@ -533,7 +531,7 @@ try {
 
   const result = await readFile(path.join(agentTemp, "agent.txt"), "utf8");
   const assistant = chat.current!.messages.at(-1)!;
-  const tool = assistant.parts.find((part): part is ToolPart => part.type === "tool");
+  const tool = assistant.parts.find((part): part is ToolPart => part.type === "tool" && part.tool === "replace_file");
   const finalText = assistant.parts
     .filter((part) => part.type === "text")
     .map((part) => part.text)

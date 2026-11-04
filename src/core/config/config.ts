@@ -6,7 +6,7 @@ export type ThemeName = "dark" | "light";
 export interface Config {
   /** Default model id as understood by Ollama, e.g. "qwen2.5-coder:7b". */
   model: string;
-  models: Record<string, { thinking: string; numCtx: number }>;
+  models: Record<string, { thinking: string; numCtx: number; sampling?: SamplingConfig }>;
   ollama: {
     /** Overall request timeout. Loading a model can take a while on first use. */
     baseUrl: string;
@@ -29,6 +29,7 @@ export interface Config {
     seed: number | null;
     stop: string[];
     thinking: string;
+    samplingProfile: "auto" | "model" | "qwen3-thinking" | "qwen3-fast" | "custom";
   };
   context: {
     /** Keep at most this many messages in the prompt. */
@@ -48,6 +49,8 @@ export interface Config {
     /** Optional path to a custom system prompt file. */
     promptFile: string | null;
     maxStalledSteps: number;
+    profile: "auto" | "plan" | "edit" | "full";
+    stopAfterToolCall: boolean;
   };
   compaction: {
     /** Enable manual and automatic session compaction. */
@@ -74,6 +77,27 @@ export interface Config {
     /** Derive a session title from the first user message. */
     autoTitle: boolean;
   };
+  mcp: {
+    enabled: boolean;
+    servers: Record<string, {
+      enabled: boolean;
+      command: string;
+      args: string[];
+      env: Record<string, string>;
+      cwd?: string;
+      safe: boolean;
+    }>;
+  };
+}
+
+export interface SamplingConfig {
+  profile: "auto" | "model" | "qwen3-thinking" | "qwen3-fast" | "custom";
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  minP?: number;
+  repeatPenalty?: number;
+  presencePenalty?: number;
 }
 
 export function defaultConfig(): Config {
@@ -99,6 +123,7 @@ export function defaultConfig(): Config {
       seed: null,
       stop: [],
       thinking: "off",
+      samplingProfile: "auto",
     },
     context: {
       maxMessages: 24,
@@ -112,6 +137,8 @@ export function defaultConfig(): Config {
       maxOutputChars: 24_000,
       promptFile: null,
       maxStalledSteps: 3,
+      profile: "auto",
+      stopAfterToolCall: false,
     },
     compaction: {
       enabled: true,
@@ -132,6 +159,7 @@ export function defaultConfig(): Config {
     session: {
       autoTitle: true,
     },
+    mcp: { enabled: true, servers: {} },
   };
 }
 
@@ -198,6 +226,9 @@ export function mergeConfig(raw: unknown): Config {
       typeof generation.seed === "number" && Number.isFinite(generation.seed) ? generation.seed : config.generation.seed;
     config.generation.stop = readStringArray(generation.stop, config.generation.stop);
     config.generation.thinking = readString(generation.thinking, config.generation.thinking);
+    if (["auto", "model", "qwen3-thinking", "qwen3-fast", "custom"].includes(String(generation.samplingProfile))) {
+      config.generation.samplingProfile = generation.samplingProfile as Config["generation"]["samplingProfile"];
+    }
   }
 
   if (isObject(raw.models)) {
@@ -206,6 +237,7 @@ export function mergeConfig(raw: unknown): Config {
       config.models[id] = {
         thinking: readString(preference.thinking, config.generation.thinking),
         numCtx: Math.round(readNumber(preference.numCtx, config.generation.numCtx, 256)),
+        sampling: parseSampling(preference.sampling, config.generation.samplingProfile),
       };
     }
   }
@@ -223,6 +255,8 @@ export function mergeConfig(raw: unknown): Config {
     config.tools.commandTimeoutMs = readNumber(tools.commandTimeoutMs, config.tools.commandTimeoutMs, 1_000);
     config.tools.maxOutputChars = readNumber(tools.maxOutputChars, config.tools.maxOutputChars, 1_000);
     config.tools.maxStalledSteps = Math.round(readNumber(tools.maxStalledSteps, config.tools.maxStalledSteps, 1));
+    if (["auto", "plan", "edit", "full"].includes(String(tools.profile))) config.tools.profile = tools.profile as Config["tools"]["profile"];
+    config.tools.stopAfterToolCall = readBoolean(tools.stopAfterToolCall, config.tools.stopAfterToolCall);
     config.tools.promptFile =
       typeof tools.promptFile === "string" && tools.promptFile.trim()
         ? tools.promptFile.trim()
@@ -274,7 +308,32 @@ export function mergeConfig(raw: unknown): Config {
     config.session.autoTitle = readBoolean(raw.session.autoTitle, config.session.autoTitle);
   }
 
+  if (isObject(raw.mcp)) {
+    config.mcp.enabled = readBoolean(raw.mcp.enabled, config.mcp.enabled);
+    if (isObject(raw.mcp.servers)) {
+      for (const [name, value] of Object.entries(raw.mcp.servers)) {
+        if (!isObject(value) || typeof value.command !== "string" || !value.command.trim()) continue;
+        config.mcp.servers[name] = {
+          enabled: readBoolean(value.enabled, true),
+          command: value.command.trim(),
+          args: readStringArray(value.args, []),
+          env: isObject(value.env) ? Object.fromEntries(Object.entries(value.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {},
+          cwd: typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined,
+          safe: readBoolean(value.safe, false),
+        };
+      }
+    }
+  }
+
   return config;
+}
+
+function parseSampling(value: unknown, fallback: SamplingConfig["profile"]): SamplingConfig {
+  if (!isObject(value)) return { profile: fallback };
+  const profile = ["auto", "model", "qwen3-thinking", "qwen3-fast", "custom"].includes(String(value.profile))
+    ? value.profile as SamplingConfig["profile"] : fallback;
+  const optional = (key: string): number | undefined => typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] as number : undefined;
+  return { profile, temperature: optional("temperature"), topP: optional("topP"), topK: optional("topK"), minP: optional("minP"), repeatPenalty: optional("repeatPenalty"), presencePenalty: optional("presencePenalty") };
 }
 
 function applyEnvironment(config: Config): void {

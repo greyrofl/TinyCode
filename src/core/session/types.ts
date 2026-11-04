@@ -28,6 +28,8 @@ export interface ToolPart {
   changed?: boolean;
   changedPaths?: string[];
   verification?: boolean;
+  verificationKinds?: string[];
+  readPaths?: string[];
   startedAt?: number;
   endedAt?: number;
 }

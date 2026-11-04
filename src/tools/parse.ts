@@ -13,6 +13,13 @@ export interface ParsedToolCalls {
   text: string;
   calls: ParsedToolCall[];
   errors: string[];
+  issues: ToolParseIssue[];
+}
+
+export interface ToolParseIssue {
+  message: string;
+  fragment: string;
+  toolName?: string;
 }
 
 function stripFence(text: string): string {
@@ -172,6 +179,7 @@ export class ToolCallStreamFilter {
 export function parseToolCalls(raw: string): ParsedToolCalls {
   const calls: ParsedToolCall[] = [];
   const errors: string[] = [];
+  const issues: ToolParseIssue[] = [];
   const pattern = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
 
   const bodies = [...raw.matchAll(pattern)].map((match) => match[1]!.trim());
@@ -181,12 +189,18 @@ export function parseToolCalls(raw: string): ParsedToolCalls {
     const start = raw.toLowerCase().lastIndexOf("<tool_call>");
     const recovered = balancedObject(raw.slice(start + OPEN.length));
     if (recovered) bodies.push(recovered);
-    else errors.push("A <tool_call> block was not closed and its JSON object is incomplete.");
+    else {
+      const fragment = raw.slice(start + OPEN.length).trim().slice(0, 500);
+      const message = "A <tool_call> block was not closed and its JSON object is incomplete.";
+      errors.push(message);
+      issues.push({ message, fragment, toolName: /["']?name["']?\s*:\s*["']([^"']+)/i.exec(fragment)?.[1] });
+    }
   }
 
   for (const body of bodies) {
     if (!body) {
       errors.push("Empty tool call block.");
+      issues.push({ message: "Empty tool call block.", fragment: body });
       continue;
     }
     try {
@@ -206,9 +220,9 @@ export function parseToolCalls(raw: string): ParsedToolCalls {
         arguments: args as Record<string, unknown>,
       });
     } catch (error) {
-      errors.push(
-        `Invalid tool call JSON. Use one-line JSON and encode newlines as \\n: ${errorMessage(error)}`,
-      );
+      const message = `Invalid tool call JSON: ${errorMessage(error)}`;
+      errors.push(message);
+      issues.push({ message, fragment: body.slice(0, 500), toolName: /["']?name["']?\s*:\s*["']([^"']+)/i.exec(body)?.[1] });
     }
   }
 
@@ -217,5 +231,5 @@ export function parseToolCalls(raw: string): ParsedToolCalls {
     .replace(/<tool_call>[\s\S]*$/i, "")
     .trim();
 
-  return { text, calls, errors };
+  return { text, calls, errors, issues };
 }

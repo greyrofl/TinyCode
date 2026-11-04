@@ -148,6 +148,7 @@ interface Tool {
 | Processes | `start_process`, `process_status`, `list_processes`, `stop_process` |
 | Network | `fetch_url` |
 | User response | `say` |
+| Verification | `verify`, `diagnostics` |
 
 Файловая безопасность двухуровневая:
 
@@ -387,5 +388,5 @@ welcome → `/help` → user prompt → `list_dir` → observation → final ans
 - granular permission rules (`allow npm test`, deny network commands);
 - native tool calling для моделей, которые умеют его надёжно;
 - syntax highlighting и structured diffs;
-- MCP/LSP;
+- расширение MCP transports/resources и LSP-навигации;
 - локальный HTTP/SSE слой для web/desktop UI.

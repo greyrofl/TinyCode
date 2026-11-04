@@ -49,14 +49,20 @@ function selectMessages(messages: Message[], options: ContextOptions): Message[]
   return candidates.slice(start);
 }
 
-function observationFor(part: ToolPart): string {
+function headTail(text: string, head = 5_000, tail = 2_000): string {
+  if (text.length <= head + tail) return text;
+  return `${text.slice(0, head)}\n… ${text.length - head - tail} chars omitted; tail follows …\n${text.slice(-tail)}`;
+}
+
+function observationFor(part: ToolPart, latest: boolean): string {
+  const value = latest ? part.output ?? part.error ?? "(no output)" : headTail(part.output ?? part.error ?? "(no output)");
   switch (part.status) {
     case "completed":
-      return `[Observation: ${part.output ?? "(no output)"}]`;
+      return `[Observation: ${value}]`;
     case "denied":
       return `[Observation: Tool call denied by the user: ${part.error ?? "permission denied"}]`;
     case "error":
-      return `[Observation: Error: ${part.error ?? part.output ?? "tool failed"}]`;
+      return `[Observation: Error: ${value}]`;
     default:
       return "[Observation: Tool call did not finish.]";
   }
@@ -66,7 +72,7 @@ function observationFor(part: ToolPart): string {
  * Reconstruct the text-protocol conversation, including tool calls and their
  * observations. Reasoning is intentionally not sent back to the model.
  */
-function expandMessage(message: Message): ChatMessage[] {
+function expandMessage(message: Message, latestCallId?: string): ChatMessage[] {
   if (message.role === "user") {
     const text = textOf(message).trim();
     return text ? [{ role: "user", content: text }] : [];
@@ -89,7 +95,7 @@ function expandMessage(message: Message): ChatMessage[] {
         buffer += (buffer ? "\n" : "") + call;
       }
       flush();
-      out.push({ role: "user", content: observationFor(part) });
+      out.push({ role: "user", content: observationFor(part, part.callId === latestCallId) });
     }
   }
   flush();
@@ -112,7 +118,9 @@ function mergeConsecutive(messages: ChatMessage[]): ChatMessage[] {
 function truncateContent(content: string, max: number): string {
   if (content.length <= max) return content;
   if (max <= 40) return content.slice(0, Math.max(0, max));
-  return `${content.slice(0, max - 30)}\n… context entry truncated`;
+  const head = Math.max(20, Math.floor((max - 50) * 0.72));
+  const tail = Math.max(10, max - head - 50);
+  return `${content.slice(0, head)}\n… context entry truncated …\n${content.slice(-tail)}`;
 }
 
 /** Keep the current user request plus the newest agent/tool exchange. */
@@ -123,7 +131,7 @@ function trimExpanded(messages: ChatMessage[], maxChars: number): ChatMessage[] 
   if (total <= maxChars || body.length === 0) return messages;
 
   const first = { ...body[0]! };
-  const firstBudget = Math.max(256, Math.floor(maxChars * 0.4));
+  const firstBudget = Math.max(256, Math.floor(maxChars * 0.25));
   first.content = truncateContent(first.content, firstBudget);
   let remaining = Math.max(0, maxChars - first.content.length);
   const tail: ChatMessage[] = [];
@@ -151,8 +159,11 @@ export function buildContext(
   const out: ChatMessage[] = [];
   if (systemPrompt?.trim()) out.push({ role: "system", content: systemPrompt.trim() });
 
-  for (const message of selectMessages(messages, options)) {
-    out.push(...expandMessage(message));
+  const selected = selectMessages(messages, options);
+  const latestCallId = [...selected].reverse().flatMap((message) => [...toolPartsOf(message)].reverse())
+    .find((part) => ["completed", "error", "denied"].includes(part.status))?.callId;
+  for (const message of selected) {
+    out.push(...expandMessage(message, latestCallId));
   }
 
   const firstConversationIndex = out[0]?.role === "system" ? 1 : 0;

@@ -141,8 +141,8 @@ export const readFileTool: Tool = {
       type: "object",
       properties: {
         path: { type: "string", description: "File path relative to the working directory." },
-        offset: { type: "integer", description: "First line to read (1-based). Default: 1." },
-        limit: { type: "integer", description: "Maximum number of lines. Default: 400, max: 2000." },
+        offset: { type: "integer", description: "First line to read, one-based.", default: 1 },
+        limit: { type: "integer", description: "Maximum lines returned (max 2000).", default: 400 },
       },
       required: ["path"],
       additionalProperties: false,
@@ -173,6 +173,7 @@ export const readFileTool: Tool = {
     const body = selected.join("\n");
     return {
       ok: true,
+      readPaths: [file],
       output: truncateOutput(`${header}\n\n${body}`, outputLimit(context)),
     };
   },
@@ -185,7 +186,7 @@ export const listDirTool: Tool = {
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Directory path relative to the working directory. Default: ." },
+        path: { type: "string", description: "Directory path relative to the working directory.", default: "." },
       },
       required: [],
       additionalProperties: false,

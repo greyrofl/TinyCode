@@ -60,6 +60,14 @@ const profiles = {
     options: nonThinkingOptions,
     promptStyle: "short",
   },
+  "8b-q4-short-stop": {
+    model: Q4,
+    think: false,
+    promptSuffix: "\n/no_think\n",
+    options: nonThinkingOptions,
+    promptStyle: "short",
+    stopAfterToolCall: true,
+  },
   "8b-q6-short-valid": {
     model: Q6,
     think: false,
@@ -158,6 +166,7 @@ async function evaluate(label, profile, deadlineSeconds, promptMode) {
   config.generation.seed = 42;
   config.generation.thinking = profile.think === undefined ? "auto" : profile.think === false ? "off" : "on";
   config.ollama.extraOptions = { ...profile.options };
+  config.tools.stopAfterToolCall = profile.stopAfterToolCall === true;
   config.compaction.auto = false; // This is one new turn: remove a confounding factor.
   const tools = createDefaultTools();
   const systemPrompt = loadSystemPrompt(tools.definitions(), config);
@@ -362,6 +371,7 @@ async function evaluate(label, profile, deadlineSeconds, promptMode) {
     model: profile.model,
     serverUrl: baseUrl,
     promptStyle: profile.promptStyle || "current",
+    stopAfterToolCall: config.tools.stopAfterToolCall,
     think: profile.think ?? "model default",
     promptSuffix: profile.promptSuffix ?? null,
     outputOptions: profile.options ?? "TinyCode defaults + model inherited defaults",

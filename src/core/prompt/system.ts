@@ -11,20 +11,56 @@ export interface SystemPromptInfo {
   usedFallback: boolean;
 }
 
-function toolBlock(tools: ToolDefinition[]): string {
+function brief(value: string, max = 60): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
+}
+
+export function toolSignature(tool: ToolDefinition): string {
+  const required = new Set(tool.parameters.required);
+  const parameters = Object.entries(tool.parameters.properties).map(([name, schema]) => {
+    const type = schema.type === "array" && schema.items ? `${schema.items.type}[]` : schema.type;
+    const choices = schema.enum?.length ? ` [${schema.enum.join("|")}]` : "";
+    const defaultValue = schema.default !== undefined ? ` =${JSON.stringify(schema.default)}` : "";
+    return `${name}:${type}${required.has(name) ? "!" : "?"}${choices}${defaultValue} — ${brief(schema.description)}`;
+  });
+  return parameters.length ? parameters.join("\n") : "arguments: none";
+}
+
+function exampleValue(type: string, name: string): unknown {
+  if (name === "path") return "src/file.js";
+  if (name === "oldText") return "export function value() {\n  return 1;\n}";
+  if (name === "newText") return "export function value() {\n  return 2;\n}";
+  if (name === "command") return "npm test";
+  return type === "boolean" ? false : type === "integer" || type === "number" ? 1 : type === "array" ? [] : "value";
+}
+
+export function toolExample(tool: ToolDefinition): string {
+  const args = tool.example ?? Object.fromEntries(tool.parameters.required.map((name) => {
+    const schema = tool.parameters.properties[name]!;
+    return [name, schema.enum?.[0] ?? schema.default ?? exampleValue(schema.type, name)];
+  }));
+  return `<tool_call>${JSON.stringify({ name: tool.name, arguments: args })}</tool_call>`;
+}
+
+export function toolRepairHint(tool: ToolDefinition, fragment: string, message: string): string {
+  return [
+    `Malformed ${tool.name} call: ${message}`,
+    `Fragment: ${brief(fragment, 240)}`,
+    `Schema:\n${toolSignature(tool)}`,
+    `Valid example:\n${toolExample(tool)}`,
+  ].join("\n");
+}
+
+export function toolBlock(tools: ToolDefinition[]): string {
   if (tools.length === 0) return "No tools are available.";
   return tools
     .map((tool) => {
       const approval = tool.safe ? "automatic" : "user approval required";
-      const required = new Set(tool.parameters.required);
-      const parameters = Object.entries(tool.parameters.properties).map(([name, schema]) => {
-        const type = schema.type === "array" && schema.items ? `${schema.items.type}[]` : schema.type;
-        return `${name}:${type}${required.has(name) ? "!" : "?"}`;
-      });
       return [
         `### ${tool.name} [${approval}]`,
-        tool.description,
-        parameters.length > 0 ? `Arguments: ${parameters.join("; ")}` : "Arguments: none",
+        brief(tool.description, 100),
+        toolSignature(tool),
       ].join("\n");
     })
     .join("\n\n");
@@ -79,12 +115,14 @@ function resolveCandidates(config: Config): string[] {
   return candidates;
 }
 
-function inject(template: string, tools: ToolDefinition[]): string {
+export function renderSystemPrompt(template: string, tools: ToolDefinition[], profile?: string): string {
   const definitions = toolBlock(tools);
   let text = template;
 
   if (/<!--\s*TOOL DEFINITIONS PLACEHOLDER\s*-->/i.test(text)) {
-    text = text.replace(/<!--\s*TOOL DEFINITIONS PLACEHOLDER\s*-->/i, definitions);
+    text = text.replace(/<!--\s*TOOL DEFINITIONS PLACEHOLDER\s*-->/i, `<!-- TINYCODE_TOOLS_START -->\n${definitions}\n<!-- TINYCODE_TOOLS_END -->`);
+  } else if (/<!-- TINYCODE_TOOLS_START -->[\s\S]*?<!-- TINYCODE_TOOLS_END -->/.test(text)) {
+    text = text.replace(/<!-- TINYCODE_TOOLS_START -->[\s\S]*?<!-- TINYCODE_TOOLS_END -->/, `<!-- TINYCODE_TOOLS_START -->\n${definitions}\n<!-- TINYCODE_TOOLS_END -->`);
   } else if (!text.includes("### create_file") && !text.includes("### read_file")) {
     text = `${text.trimEnd()}\n\n# AVAILABLE TOOLS\n\n${definitions}\n`;
   }
@@ -94,8 +132,12 @@ function inject(template: string, tools: ToolDefinition[]): string {
   }
 
   text = text.replaceAll("{{TOOLS}}", definitions);
+  text = text.replace(/\n?<tool_profile>[\s\S]*?<\/tool_profile>\n?/g, "\n");
+  if (profile) text += `\n<tool_profile>\nActive profile: ${profile}. Only the tools listed above are available in this step.\n</tool_profile>\n`;
   return text.trimEnd() + "\n";
 }
+
+const inject = renderSystemPrompt;
 
 /**
  * Load the agent system prompt. The repository ships `promt.md`; the tool

@@ -27,7 +27,7 @@ import { Terminal } from "./terminal.js";
 import { getPalette, type Palette } from "./theme.js";
 import { shortTitle, Transcript } from "./transcript.js";
 import type { Line } from "./types.js";
-import { fitLine, lineWidth, padLine, spaces } from "./types.js";
+import { fitLine, lineWidth, spaces } from "./types.js";
 
 export interface TuiOptions {
   chat: ChatService;
@@ -41,6 +41,7 @@ export interface TuiOptions {
   compactionPromptSource?: string;
   onModelChange?: (model: string) => Promise<void> | void;
   runtime?: OllamaRuntime;
+  startupNotices?: Array<{ text: string; level: "info" | "warn" | "error" }>;
 }
 
 type PickerKind = "model" | "session" | "thinking" | "context" | "parallel";
@@ -58,6 +59,7 @@ const COMMANDS: Array<{ name: string; description: string }> = [
   { name: "think", description: "choose the model's thinking mode" },
   { name: "context", description: "set Ollama's context window" },
   { name: "parallel", description: "check/set local Ollama parallel" },
+  { name: "profile", description: "tools: auto, plan, edit, or full" },
   { name: "clear", description: "clear the screen" },
   { name: "export", description: "save the session as Markdown" },
   { name: "info", description: "show session details" },
@@ -119,6 +121,7 @@ export class TinyCodeTui {
     try {
       await this.loadHistory();
       this.attach();
+      for (const notice of this.options.startupNotices ?? []) this.transcript.notice(notice.text, notice.level);
       this.options.chat.setApprovalHandler((request) => this.requestApproval(request));
       this.terminal.onData((chunk) => this.parser.push(chunk));
       this.terminal.onResize(() => {
@@ -328,30 +331,53 @@ export class TinyCodeTui {
 
   private welcomePanel(width: number): Line[] {
     const palette = this.palette;
-    const panelWidth = Math.max(16, Math.min(66, width - 4));
+    const panelWidth = Math.max(28, Math.min(64, width - 4));
     const inside = panelWidth - 4;
     const model = (this.options.chat.currentModel ?? this.options.config.model).split("/").at(-1) ?? "";
-    const fields = [
-      ["Model", model, "/model"],
-      ["Thinking", this.options.chat.currentThinking, "/think"],
-      ["Context", `${this.options.chat.contextLimit.toLocaleString("en-US")} tokens`, "/context"],
-      ["Folder", shortPath(this.options.chat.current?.meta.cwd ?? this.options.cwd), ""],
-      ["Memory", this.options.config.compaction.auto ? "automatic compaction" : "manual compaction", "/compact"],
+    const fields: Array<{ label: string; value: string; hint: string }> = [
+      { label: "model", value: model, hint: "/model" },
+      { label: "thinking", value: this.options.chat.currentThinking, hint: "/think" },
+      { label: "context", value: `${this.options.chat.contextLimit.toLocaleString("en-US")} tokens`, hint: "/context" },
+      { label: "folder", value: shortPath(this.options.chat.current?.meta.cwd ?? this.options.cwd), hint: "" },
     ];
-    const rows: Line[] = [[{ text: `╭─ Session setup ${"─".repeat(Math.max(0, panelWidth - 18))}╮`, style: { fg: palette.border } }]];
-    for (const [label, value, command] of fields) {
-      const hint = width >= 54 ? command! : "";
-      const valueWidth = Math.max(1, inside - 10 - hint.length);
-      const row: Line = [
-        { text: label!.padEnd(9), style: { fg: palette.faint, bg: palette.panel } },
-        { text: truncateWidth(sanitizeText(singleLine(value!)), valueWidth), style: { fg: palette.text, bg: palette.panel } },
-      ];
-      const content = [...padLine(row, inside - hint.length, { bg: palette.panel }),
-        { text: hint, style: { fg: palette.accent, bg: palette.panel } }];
-      rows.push([{ text: "│ ", style: { fg: palette.border } }, ...content, { text: " │", style: { fg: palette.border } }]);
+
+    const border = { fg: palette.border };
+    const title = " session ";
+    const rows: Line[] = [[
+      { text: "╭─", style: border },
+      { text: title, style: { fg: palette.accent, bold: true } },
+      { text: "─".repeat(Math.max(0, panelWidth - 12)), style: border },
+      { text: "╮", style: border },
+    ]];
+
+    for (const field of fields) {
+      const hint = width >= 58 ? field.hint : "";
+      const valueWidth = Math.max(8, inside - 10 - hint.length);
+      const value = padEndWidth(
+        truncateWidth(sanitizeText(singleLine(field.value)), valueWidth),
+        valueWidth,
+      );
+      rows.push([
+        { text: "│ ", style: border },
+        { text: field.label.padEnd(10), style: { fg: palette.muted } },
+        { text: value, style: { fg: palette.text } },
+        { text: hint, style: { fg: palette.accentDim } },
+        { text: " │", style: border },
+      ]);
     }
-    rows.push([{ text: `╰${"─".repeat(panelWidth - 2)}╯`, style: { fg: palette.border } }]);
+
+    rows.push([{ text: `╰${"─".repeat(panelWidth - 2)}╯`, style: border }]);
     return this.centerBlock(rows, width);
+  }
+
+  private welcomeChips(): Line {
+    const palette = this.palette;
+    const line: Line = [];
+    for (const [index, item] of ["/new", "/sessions", "/model", "/help"].entries()) {
+      if (index > 0) line.push({ text: "  ·  ", style: { fg: palette.border } });
+      line.push({ text: item, style: { fg: palette.accent, bold: true } });
+    }
+    return line;
   }
 
   private welcomeLines(width: number, height: number): Line[] {
@@ -359,14 +385,33 @@ export class TinyCodeTui {
     const fullLogo = buildLogo(palette);
     const full = height >= 18 && logoWidth(fullLogo) + 4 <= width;
     const logo = this.centerBlock(full ? fullLogo : buildLogo(palette, true), width);
+
+    const memory = this.options.config.compaction.auto ? "auto memory" : "manual memory";
+    const tagline: Line = [
+      { text: "local models", style: { fg: palette.muted } },
+      { text: "  ·  ", style: { fg: palette.border } },
+      { text: "real code", style: { fg: palette.muted } },
+      { text: "  ·  ", style: { fg: palette.border } },
+      { text: `${this.options.chat.toolCount} tools`, style: { fg: palette.accentDim } },
+      ...(width >= 74
+        ? [{ text: "  ·  ", style: { fg: palette.border } }, { text: memory, style: { fg: palette.faint } }]
+        : []),
+    ];
+
     let content: Line[] = [
       ...logo,
+      ...(width >= 64
+        ? [this.centered(tagline, width)]
+        : width >= 40
+          ? [this.centered([{ text: "local models · real code", style: { fg: palette.muted } }], width)]
+          : []),
       [],
-      ...(full ? [this.centered([{ text: "Local models. Real code.", style: { fg: palette.faint } }], width), []] : []),
       ...this.welcomePanel(width),
       [],
-      this.centered([{ text: "/sessions   /new   /help", style: { fg: palette.accent } }], width),
-      this.centered([{ text: "Type a task below and press Enter", style: { fg: palette.faint } }], width),
+      this.centered(this.welcomeChips(), width),
+      ...(height >= 26
+        ? [this.centered([{ text: "enter send · alt+enter newline · /help", style: { fg: palette.faint } }], width)]
+        : []),
     ].map((line) => fitLine(line, width));
     if (content.length > height) content = content.slice(0, Math.max(1, height));
 
@@ -827,6 +872,9 @@ export class TinyCodeTui {
         case "parallel":
           await this.openParallelPicker();
           break;
+        case "profile":
+          await this.setToolProfile(argument || "auto");
+          break;
         case "clear":
           this.transcript.clearView();
           this.scroll = 0;
@@ -880,10 +928,19 @@ export class TinyCodeTui {
   private async saveModelPreference(): Promise<void> {
     const model = this.options.chat.currentModel;
     if (!model) return;
-    const preference = { thinking: this.options.chat.currentThinking, numCtx: this.options.chat.contextLimit };
+    const sampling = this.options.config.models[model]?.sampling ?? this.options.persistedConfig.models[model]?.sampling;
+    const preference = { thinking: this.options.chat.currentThinking, numCtx: this.options.chat.contextLimit, ...(sampling ? { sampling } : {}) };
     this.options.config.models[model] = { ...preference };
     this.options.persistedConfig.models[model] = { ...preference };
     await this.persistConfig();
+  }
+
+  private async setToolProfile(profile: string): Promise<void> {
+    if (!["auto", "plan", "edit", "full"].includes(profile)) throw new Error("Profile must be auto, plan, edit, or full.");
+    this.options.config.tools.profile = profile as Config["tools"]["profile"];
+    this.options.persistedConfig.tools.profile = profile as Config["tools"]["profile"];
+    await this.persistConfig();
+    this.transcript.notice(`Tool profile: ${profile}. It applies to the next model step.`, "info");
   }
 
   private async openThinkingPicker(setup = false): Promise<void> {
@@ -1174,6 +1231,8 @@ export class TinyCodeTui {
             ? ` · approval ${this.options.config.tools.autoApprove ? "auto" : "ask"}`
             : ""
         }`,
+        `Profile   ${this.options.config.tools.profile}`,
+        `MCP       ${Object.values(this.options.config.mcp.servers).filter((server) => server.enabled).length} configured`,
         `Prompt    ${this.options.promptSource ?? "built-in"}`,
         `Compact   ${session.meta.compaction
           ? `${session.meta.compaction.sourceMessageCount} messages · ${session.meta.compaction.summary.length} chars · ${session.meta.compaction.strategy}`

@@ -1,101 +1,251 @@
-# TinyCode
+<div align="center">
 
-Терминальный coding-agent для **маленьких локальных моделей (1–14B)** через
-[Ollama](https://ollama.com). Интерфейс вдохновлён OpenCode, но имеет собственный
-TUI: CMD-art логотип, потоковый чат, отдельные thinking/tool-блоки, сессии,
-approval-диалоги и прокрутку колесом мыши.
+<pre>
+█████ ███ █   █ █   █  ████  ███  ████  █████
+  █    █  ██  █ █   █ █     █   █ █   █ █
+  █    █  █ █ █  █ █  █     █   █ █   █ ████
+  █    █  █  ██   █   █     █   █ █   █ █
+  █   ███ █   █   █    ████  ███  ████  █████
+</pre>
 
-TinyCode не использует облачные API и не содержит системы добавления удалённых
-провайдеров. Модель и данные остаются локальными.
+### Терминальный coding-агент для маленьких локальных моделей
 
-## Новое в 0.4
+`Ollama` · `1–14B` · `без облака` · `TUI`
 
-- Компактный основной промт вместо длинного повторяющегося протокола.
-- Выбор модели → выбор поддерживаемого thinking → размер контекста.
-- `/think off|on|auto|<level>` управляет генерацией; `/reasoning` — только видимостью.
-- `/context <tokens>` передаёт `num_ctx` в Ollama и сохраняется для сессии.
-- Нижняя панель показывает процент и `used/limit` токенов. `~` означает оценку
-  во время стриминга; после ответа используются счётчики Ollama.
-- При локальном запуске Ollama автоматически стартует, если ещё не работает.
-- Предупреждение о parallel и кликабельная кнопка сохранения `parallel=1`.
-- No-op edits не пишут файл; инструменты возвращают diff и текущие строки.
-- Планы без действия/проверки больше не считаются завершённой задачей; серии
-  ошибок и повторов прерываются раньше.
+[![version](https://img.shields.io/badge/version-0.5.0-7dd3fc?style=flat-square)](#что-нового-в-05)
+[![node](https://img.shields.io/badge/node-%E2%89%A5%2020.11-339933?style=flat-square&logo=node.js&logoColor=white)](#быстрый-старт)
+[![ollama](https://img.shields.io/badge/Ollama-local-111827?style=flat-square)](https://ollama.com)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4b5563?style=flat-square)](#быстрый-старт)
+[![license](https://img.shields.io/badge/license-MIT-86efac?style=flat-square)](LICENSE)
 
-Для уже запущенной пользователем Ollama кнопка меняет Windows **User** environment,
-но не останавливает сервер. Нужен его полный перезапуск. Сервер, запущенный
-текущим TinyCode, перезапускается автоматически. На других ОС настройка применяется
-к серверу, который запускает TinyCode; внешнюю службу следует настроить отдельно.
+</div>
+
+TinyCode — агент для терминала, который работает с моделями **1–14B** через
+[Ollama](https://ollama.com) (а при достаточной VRAM — и с более крупными).
+Никаких облачных API: модель, файлы и сессии остаются на вашей машине.
+Интерфейс вдохновлён OpenCode, но TUI, агентский цикл и протокол инструментов
+написаны с нуля под ограничения маленьких моделей.
+
+```
+$ ollama pull qwen2.5-coder:7b
+$ cd my-project
+$ tinycode
+```
+
+---
+
+## Почему TinyCode
+
+- **Текстовый протокол вместо native function calling.** Модели 1–14B заметно
+  стабильнее выдают `<tool_call>{"name":...}</tool_call>`, чем JSON-schema
+  function calling. Парсер при этом умеет чинить типичные ошибки JSON.
+- **Проверяется результат, а не обещание.** «Сейчас исправлю» без изменения файла
+  не считается выполнением. Финал принимается только после фактического действия
+  и проверки.
+- **Маленькая модель не обязана быть самостоятельной.** Промт, stage-профили
+  tools, `read_before_edit`, fingerprint повторных ошибок и `verify` берут на себя
+  ту дисциплину, которой у 7B обычно не хватает.
+- **Рассчитан на один GPU.** Один parallel slot, `num_ctx` под сессию, честные
+  счётчики токенов и предупреждение, если Ollama вытесняет слои в CPU.
+
+## Содержание
+
+- [Быстрый старт](#быстрый-старт)
+- [Что нового в 0.5](#что-нового-в-05)
+- [Возможности](#возможности)
+- [Tools](#tools)
+- [CLI](#cli)
+- [TUI](#tui)
+- [Конфигурация](#конфигурация)
+- [Модели и железо](#модели-и-железо)
+- [Архитектура](#архитектура)
+- [Разработка](#разработка)
+- [Ограничения](#ограничения)
+- [Документация](#документация)
+
+---
 
 ## Быстрый старт
 
-Требования: Node.js **20.11+**, установленный и запущенный Ollama.
+Нужны **Node.js 20.11+** и установленный [Ollama](https://ollama.com). Если
+Ollama слушает loopback и ещё не запущена, TinyCode поднимет её сам; внешние
+серверы он не стартует.
 
 ```bash
-ollama serve
+# 1. модель
 ollama pull qwen2.5-coder:7b
-```
 
-Из исходников:
-
-```bash
+# 2. сам агент
+git clone https://github.com/greyrofl/TinyCode.git
+cd TinyCode
 npm install
 npm run build
 npm link
 
+# 3. работа
+cd ~/projects/my-app
 tinycode
 ```
 
-После `npm link` команда `tinycode` работает из любой папки. Текущая папка
-становится рабочим каталогом агента (`cwd`).
+После `npm link` команда `tinycode` доступна из любой папки, а текущая папка
+становится рабочим каталогом агента.
 
-## Установка через npm
+> **npm-пакет.** Имя пакета — `tinycode-cli`, бинарника — `tinycode` (имя
+> `tinycode` в npm занято). Пакет подготовлен к публикации, но в реестр пока не
+> выложен. После публикации установка будет такой:
+>
+> ```bash
+> npm install --global tinycode-cli
+> ```
 
-Да, проект готов собираться и запускаться как OpenCode. После публикации:
+## Что нового в 0.5
 
-```bash
-npm install --global tinycode-cli
-tinycode
+- **Профили tools**: `/profile auto|plan|edit|full` и `--profile`. `auto` ведёт
+  агента по этапам plan → edit → verify, а не выдаёт сразу все 28 инструментов.
+- **`verify`** сам определяет стек (npm scripts, pytest, Cargo, Go, .NET) и
+  запускает проверки. Не найденная проверка — ошибка, а не «всё хорошо».
+- **`diagnostics`** использует локальный LSP (`typescript-language-server`,
+  `pylsp`, `rust-analyzer`, `gopls`) либо syntax fallback. Молчание LSP не
+  считается отсутствием ошибок.
+- **`read_before_edit`**: `edit_file` и `replace_file` требуют успешного чтения
+  этого файла в сессии.
+- **Repair**: ошибка JSON показывает фрагмент, схему конкретного tool и валидный
+  пример; повторная ошибка получает подсказку о следующем действии.
+- **MCP**: локальные stdio-серверы из конфига, tools вида
+  `mcp_<server>_<tool>`, по умолчанию с approval.
+- **Sampling profiles** вместо неявного выбора по числам temperature/topP.
+- **Observations**: старые сокращаются head+tail, свежая сохраняется целиком,
+  если помещается в бюджет.
+- **Windows**: автозапуск Ollama больше не создаёт отдельную detached-консоль.
+
+Подробно, включая компромиссы и то, что осталось выключенным:
+[`docs/RELEASE_0.5.md`](docs/RELEASE_0.5.md).
+
+---
+
+## Возможности
+
+### Агентский цикл
+
+```
+read → act → observe → verify → answer
 ```
 
-В рамках этой задачи пакет **не публиковался** в реестр: публикация требует
-вашего npm-аккаунта. Локальный tarball и global install из него уже проверены.
+Модель вызывает один инструмент за шаг, получает `[Observation: ...]` и
+продолжает до финального ответа. TinyCode:
 
-Имя npm-пакета — **`tinycode-cli`**, а имя бинарника — **`tinycode`**. Пакет
-`tinycode` в npm уже занят, поэтому они различаются. На Windows npm автоматически
-создаёт `tinycode.cmd`.
+- скрывает служебные `<tool_call>` из ленты;
+- блокирует no-op правки и повторные неизменные вызовы;
+- останавливает серию malformed/failed шагов;
+- не принимает план вместо действия;
+- возвращает модели diff и актуальные строки после правки;
+- прямо запрещает править тесты, чтобы скрыть падение.
 
-Локально проверено:
+### Профили tools
 
-- `npm pack` создаёт архив с `dist/`, `promt.md`, документацией и лицензией;
-- установка архива через `npm install -g --prefix ...` создаёт `tinycode.cmd`;
-- установленная команда запускается из другой папки и использует её как `cwd`.
+| Профиль | Что доступно | Когда использовать |
+| --- | --- | --- |
+| `auto` | чтение всегда; запись после чтения; verify после правки | по умолчанию |
+| `plan` | только чтение, git, поиск, `verify` для исходных тестов | анализ и планирование |
+| `edit` | чтение + запись + verify | обычная правка кода |
+| `full` | всё, включая shell, process и MCP tools | shell/server/network задачи |
 
-Публикация владельцем пакета:
+Переключение: `/profile` в TUI или `--profile full` в CLI. Approval при этом
+никуда не исчезает.
 
-```bash
-npm login
-npm publish --access public
+### Проверка результата
+
+`verify(mode=quick|full)` находит проект и запускает его проверки:
+
+- Node: package scripts (`typecheck`, `test`, `lint`, `build`) через npm, pnpm
+  или yarn;
+- Python: pytest;
+- Rust: Cargo;
+- Go: `go test`;
+- .NET: solution.
+
+`quick` — typecheck/tests, `full` — ещё lint/build. `diagnostics(path)` даёт
+ошибки компилятора/линтера с `path:line:column` и не выдаёт отсутствие LSP за
+чистый результат.
+
+### Контекст и память
+
+При приближении к лимиту старые завершённые ходы сжимаются в структурированную
+Markdown-память. Свежие сообщения остаются нетронутыми, исходные
+`messages.jsonl` не удаляются. Если модель не смогла суммаризировать, включается
+детерминированный extractive fallback.
+
+Внизу экрана — реальные токены последнего запроса; `~` означает оценку во время
+стриминга. После compaction, смены модели или контекста метрика пересчитывается.
+
+### Сессии
+
+```text
+~/.tinytcode/
+  config.json
+  history.json
+  sessions/
+    ses_xxx/
+      meta.json        # модель, контекст, thinking, compacted memory
+      messages.jsonl   # ordered parts: reasoning / text / tool
 ```
 
-Перед публикацией автоматически запускаются typecheck, smoke-тесты и build.
-Если имя `tinycode-cli` окажется занято до публикации, можно использовать scope,
-например `@your-name/tinycode`; поле `bin` всё равно оставит команду `tinycode`.
+Сессию можно продолжить (`--continue`, `tinycode resume`), экспортировать в
+Markdown (`/export`) или сжать вручную (`/compact`).
+
+---
+
+## Tools
+
+28 встроенных инструментов плюс подключённые MCP-серверы.
+
+| Группа | Инструменты |
+| --- | --- |
+| Чтение и поиск | `read_file`, `read_files`, `list_dir`, `find_files`, `search_text`, `file_info` |
+| Изменение | `create_file`, `edit_file`, `apply_patch`, `replace_file` |
+| Пути | `make_directory`, `move_path`, `copy_path`, `delete_file`, `delete_directory` |
+| Git (read-only) | `git_status`, `git_diff`, `git_log`, `git_show` |
+| Проверка | `verify`, `diagnostics` |
+| Команды | `execute_command` |
+| Фоновые процессы | `start_process`, `process_status`, `list_processes`, `stop_process` |
+| Сеть | `fetch_url` |
+| Ответ | `say` |
+
+**Защита**
+
+- файловые операции ограничены рабочей папкой, `..` и symlink-выходы запрещены;
+- `create_file` не перезаписывает существующий файл;
+- `edit_file` делает точную замену и отказывается при неоднозначном совпадении;
+- `apply_patch` сначала выполняет `git apply --check`;
+- у команд есть timeout и лимит вывода;
+- managed-процессы останавливаются при выходе;
+- сеть, запись, удаление и shell требуют approval: `y` — один раз, `a` — до
+  конца сессии, `n`/`Esc` — отказ;
+- `--yes` / `tools.autoApprove` отключают запросы — используйте осознанно.
+
+Протокол вызова:
+
+```text
+<tool_call>
+{"name":"read_file","arguments":{"path":"src/index.ts"}}
+</tool_call>
+```
+
+---
 
 ## CLI
 
 ```text
 tinycode [options]                 интерактивный TUI
-tinycode run [options] [prompt]    one-shot; читает stdin без prompt
+tinycode run [options] [prompt]    one-shot; читает stdin, если есть pipe
 tinycode resume [session]          открыть сессию (последнюю по умолчанию)
 tinycode compact [session]         сжать старые ходы в durable memory
 tinycode models [--json]           модели Ollama
+tinycode tools [--json]            tools и уровень approval
 tinycode sessions [--json]         сохранённые сессии
 tinycode config [--path|--json]    конфигурация
 tinycode doctor                    диагностика Ollama, tools и prompt
 ```
-
-Основные опции:
 
 | Опция | Назначение |
 | --- | --- |
@@ -105,108 +255,28 @@ tinycode doctor                    диагностика Ollama, tools и promp
 | `--cwd <dir>` | рабочая папка агента |
 | `-y, --yes` | автоматически разрешить опасные tools |
 | `--thinking` | в `run` писать thinking в stderr |
-| `--think <mode>` | реальный режим генерации thinking |
-| `--context <n>` | контекст этой сессии в токенах |
-| `--json` | JSON для `models`, `sessions`, `config` |
+| `--think <mode>` | реальный режим thinking: `off`, `on`, `auto` или named level |
+| `--context <n>` | размер контекста этой сессии (`num_ctx`) |
+| `--profile <name>` | `auto`, `plan`, `edit`, `full` |
+| `--json` | machine-readable вывод для `models`/`sessions`/`config` |
 
-Примеры:
+В one-shot режиме stdout содержит только обычный ответ: thinking, статусы tools и
+approval-предупреждения идут в stderr, поэтому `tinycode run ... > patch.md`
+безопасен.
 
 ```bash
-tinycode
-tinycode --continue
-tinycode run "объясни проект"
-tinycode run --yes "запусти тесты и исправь ошибку"
+tinycode run "объясни структуру проекта"
+tinycode run --yes "запусти тесты и исправь падение"
 tinycode run --thinking "проанализируй этот модуль"
 echo "прочитай package.json" | tinycode run
 ```
 
-В one-shot режиме stdout содержит только обычный ответ. Thinking выводится в
-stderr только с `--thinking`; статусы tools и approval-предупреждения также идут
-в stderr, поэтому stdout можно безопасно передавать дальше по pipe.
-
-## Agent tools
-
-Системный промт использует текстовый протокол:
-
-```text
-<tool_call>
-{"name":"read_file","arguments":{"path":"src/index.ts"}}
-</tool_call>
-```
-
-Это намеренно: небольшие instruct-модели обычно стабильнее генерируют такой
-формат, чем native function calling. TinyCode скрывает raw `<tool_call>` из
-ответа, выполняет действие, возвращает модели `[Observation: ...]` и продолжает
-agent-loop до финального ответа.
-
-Доступно **26 tools**:
-
-| Группа | Tools |
-| --- | --- |
-| Чтение и поиск | `read_file`, `read_files`, `list_dir`, `find_files`, `search_text`, `file_info` |
-| Изменение | `create_file`, `edit_file`, `apply_patch`, `replace_file` |
-| Пути | `make_directory`, `move_path`, `copy_path`, `delete_file`, `delete_directory` |
-| Git (read-only) | `git_status`, `git_diff`, `git_log`, `git_show` |
-| Команды | `execute_command` |
-| Background process | `start_process`, `process_status`, `list_processes`, `stop_process` |
-| Сеть | `fetch_url` |
-| Ответ | `say` |
-
-Защита:
-
-- файловые tools ограничены рабочей папкой;
-- запрещены `..` и пути, уходящие наружу через symlink;
-- `create_file` не перезаписывает существующий файл;
-- `edit_file` делает точную замену и отказывается работать при неоднозначном
-  совпадении;
-- `apply_patch` сначала прогоняет `git apply --check`, затем применяет unified diff;
-- `replace_file` остаётся инструментом полной замены;
-- команды имеют timeout и лимит вывода;
-- managed background processes автоматически останавливаются при выходе;
-- все сетевые, изменяющие и потенциально разрушительные tools показывают approval;
-- `y` — разрешить один раз, `a` — разрешить все опасные вызовы до выхода,
-  `n`/`Esc` — отклонить;
-- `tools.autoApprove: true` или `--yes` отключает запросы и требует осторожности.
-
-## Системный промт
-
-Тестовый промт находится в [`promt.md`](promt.md). Имя сохранено для
-совместимости с исходным файлом пользователя.
-
-При старте TinyCode:
-
-1. читает `promt.md` (или кастомный файл);
-2. автоматически заменяет `<!-- TOOL DEFINITIONS PLACEHOLDER -->` компактными
-   актуальными схемами из `ToolRegistry`;
-3. заменяет `{{CWD}}` на рабочую папку текущей сессии;
-4. отправляет результат как `system` message только при включённых tools.
-
-Основной промт теперь компактный и конкретный: read → act → observe → verify,
-точная семантика `oldText/newText`, один валидный JSON-вызов за шаг, запрет
-no-op/repeat, краткий фактический итог и защита пользовательских данных.
-
-Промт задаёт приоритет инструкций, inspect→act→verify цикл, выбор tools,
-защиту пользовательских изменений, работу с project instructions, compacted
-memory, approvals и краткий формат финального ответа. `AGENTS.md`, `TINYCODE.md`,
-`CLAUDE.md` и `.tinycode/instructions.md` из `cwd` подключаются автоматически.
-
-Кастомный промт:
-
-```json
-{
-  "tools": {
-    "promptFile": "C:/prompts/my-agent.md"
-  }
-}
-```
-
-или переменная `TINYCODE_PROMPT`. Поддерживаются placeholders `{{CWD}}`,
-`{{TOOLS}}` и `<!-- TOOL DEFINITIONS PLACEHOLDER -->`.
+---
 
 ## TUI
 
-Thinking, обычный ответ и tools хранятся как отдельные message parts и
-отрисовываются отдельными блоками:
+Thinking, ответ и tool-вызовы — отдельные блоки, поэтому после перезапуска и
+экспорта они не смешиваются:
 
 ```text
 ◇ thinking
@@ -215,24 +285,30 @@ Thinking, обычный ответ и tools хранятся как отдел�
 ✔ read_file  done
   │ File: src/index.ts ...
 
-Обычный финальный ответ модели.
+✔ edit_file  done
+  │ - return items[index];
+  │ + return items[index - 1];
+
+Проверил: typecheck и 3 теста проходят.
 ```
 
-Стартовый экран показывает CMD-art логотип, модель, `cwd`, бюджет контекста,
-режим approval и понятные быстрые команды.
+Стартовый экран показывает блочный wordmark с градиентом, строку
+`local models · real code · N tools` и карточку сессии: model, thinking, context,
+folder с подсказками slash-команд.
 
-### Клавиши
+<details>
+<summary><b>Клавиши</b></summary>
 
 | Клавиша | Действие |
 | --- | --- |
-| `Enter` | отправить сообщение |
+| `Enter` | отправить |
 | `Alt+Enter` / `Ctrl+J` | новая строка |
 | `Tab` | дополнить slash-команду |
 | `↑` / `↓` | история composer |
-| колесо мыши | прокрутка чата |
+| колесо | прокрутка чата |
 | `Shift+↑` / `Shift+↓` | прокрутка на строку |
 | `PgUp` / `PgDn` | прокрутка на страницу |
-| `Esc` | отменить генерацию / очистить ввод / закрыть окно |
+| `Esc` | отменить генерацию / очистить ввод / закрыть |
 | `Ctrl+C` | отменить, очистить, затем выйти |
 | `Ctrl+D` | выйти при пустом composer |
 | `Ctrl+A` / `Ctrl+E` | начало / конец строки |
@@ -240,34 +316,45 @@ Thinking, обычный ответ и tools хранятся как отдел�
 | `Ctrl+U` / `Ctrl+K` | удалить до начала / конца строки |
 | `Ctrl+L` | полная перерисовка |
 
-Колесо всегда прокручивает transcript. История введённых сообщений остаётся на
-`↑`/`↓` и с колесом не связана.
+</details>
 
-### Slash-команды
+<details>
+<summary><b>Slash-команды</b></summary>
 
 | Команда | Действие |
 | --- | --- |
-| `/help` | commands, tools и клавиши |
+| `/help` | команды, tools и клавиши |
 | `/model [name]` | пикер или установка модели |
 | `/new` | новая сессия |
-| `/sessions` | открыть другую сессию |
+| `/sessions` | переключить сессию |
 | `/retry` | перегенерировать последний ответ |
-| `/compact` | вручную сжать старые завершённые ходы |
-| `/memory` | показать текущую compacted memory |
-| `/tools` | показать все tools и уровень approval |
+| `/compact` | сжать старые ходы |
+| `/memory` | показать compacted memory |
+| `/tools` | tools и уровень approval |
 | `/reasoning` | показать/скрыть thinking |
-| `/think [mode]` | выбрать реальный режим thinking модели |
-| `/context [tokens]` | выбрать/задать context window Ollama |
-| `/parallel` | проверить parallel и сохранить значение 1 |
-| `/clear` | очистить экран, не удаляя сессию |
+| `/think [mode]` | режим генерации thinking |
+| `/context [tokens]` | context window Ollama |
+| `/profile <name>` | `auto`, `plan`, `edit`, `full` |
+| `/parallel` | проверить parallel и сохранить `1` |
+| `/clear` | очистить экран без потери сессии |
 | `/export [path]` | Markdown с thinking и tool calls |
 | `/info` | session/model/context/tools/prompt/config |
 | `/quit`, `/exit` | выход |
 
+</details>
+
+---
+
 ## Конфигурация
 
-Файл создаётся автоматически в `~/.tinytcode/config.json` (Windows:
-`%USERPROFILE%\.tinytcode\config.json`).
+Файл создаётся автоматически:
+
+```text
+~/.tinytcode/config.json            # Windows: %USERPROFILE%\.tinytcode\config.json
+```
+
+<details>
+<summary><b>Полный конфиг по умолчанию</b></summary>
 
 ```json
 {
@@ -291,12 +378,10 @@ Thinking, обычный ответ и tools хранятся как отдел�
     "repeatPenalty": 1.05,
     "seed": null,
     "stop": [],
-    "thinking": "off"
+    "thinking": "off",
+    "samplingProfile": "auto"
   },
-  "context": {
-    "maxMessages": 24,
-    "maxChars": 24000
-  },
+  "context": { "maxMessages": 24, "maxChars": 24000 },
   "tools": {
     "enabled": true,
     "autoApprove": false,
@@ -304,7 +389,9 @@ Thinking, обычный ответ и tools хранятся как отдел�
     "commandTimeoutMs": 120000,
     "maxOutputChars": 24000,
     "promptFile": null,
-    "maxStalledSteps": 3
+    "maxStalledSteps": 3,
+    "profile": "auto",
+    "stopAfterToolCall": false
   },
   "compaction": {
     "enabled": true,
@@ -316,163 +403,205 @@ Thinking, обычный ответ и tools хранятся как отдел�
     "numPredict": 1024,
     "promptFile": null
   },
-  "ui": {
-    "theme": "dark",
-    "showReasoning": true,
-    "showToolOutput": true,
-    "mouse": true
-  },
-  "session": {
-    "autoTitle": true
+  "ui": { "theme": "dark", "showReasoning": true, "showToolOutput": true, "mouse": true },
+  "session": { "autoTitle": true },
+  "mcp": { "enabled": true, "servers": {} }
+}
+```
+
+</details>
+
+### Профили моделей и sampling
+
+Выбор в TUI сохраняется в `models[modelId]` и в метаданных сессии. CLI-флаги
+меняют только текущую сессию.
+
+```json
+{
+  "models": {
+    "hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M": {
+      "thinking": "off",
+      "numCtx": 8192,
+      "sampling": {
+        "profile": "qwen3-fast",
+        "temperature": 0.7,
+        "topP": 0.8,
+        "topK": 20
+      }
+    }
   }
 }
 ```
 
-Выбранные в TUI thinking/context сохраняются в `models[modelId]` как
-`{ "thinking": "off", "numCtx": 8192 }`, а также в метаданных сессии. CLI-флаги
-меняют только текущую сессию. Большой context требует больше KV-cache/VRAM и может
-привести к перезагрузке модели или переносу слоёв на CPU.
+Доступные профили: `auto`, `model`, `qwen3-thinking`, `qwen3-fast`, `custom`.
+`model` берёт defaults из `/api/show`, `auto` — рекомендованные Qwen3 presets
+для Off/On, для остальных — объявленные моделью значения. Явные параметры
+`models[id].sampling` перекрывают профиль, а `ollama.extraOptions` применяются
+последними и перекрывают всё остальное.
 
-Поддерживаемые уровни берутся из `/api/show`; уровни вроде low/medium/high не
-придумываются по названию модели. Если Off не поддерживается, он недоступен в меню.
-Для старого HF Go-template Qwen3 режим Off использует `/api/generate` с закрытым
-thinking-префиксом ChatML: это отключает генерацию рассуждений, а не просто скрывает
-поле ответа. В других режимах сохраняется обычный `/api/chat`.
+Уровни thinking не угадываются: только то, что объявила модель. Если Off не
+поддерживается, он недоступен в меню.
 
-Для Qwen3 на исходных общих sampling defaults автоматически используются
-рекомендованные presets Off/On. Явные `ollama.extraOptions` имеют последний приоритет.
-Автозапуск разрешён только для HTTP loopback URL; внешние серверы TinyCode не запускает.
+### MCP
 
-TinyCode динамически уменьшает `context.maxChars`, если system prompt и резерв
-под `numPredict` не помещаются в `numCtx`. При достижении `compaction.threshold`
-старые завершённые ходы преобразуются в структурированную durable memory. Последние
-`keepRecentMessages` остаются без изменений.
-
-Переменные окружения:
-
-- `TINYCODE_HOME` — каталог config/history/sessions;
-- `TINYCODE_MODEL` — модель;
-- `TINYCODE_OLLAMA_URL` или `OLLAMA_HOST` — Ollama;
-- `TINYCODE_PROMPT` — файл системного промта.
-- `TINYCODE_COMPACTION_PROMPT` — системный промт суммаризатора.
-
-## Сжатие сессии
-
-Алгоритм гибридный:
-
-1. оценивает system prompt, текущую память, активные сообщения и резерв ответа;
-2. при заполнении контекста выбирает только старые **завершённые** user/assistant
-   turns, сохраняя свежий хвост;
-3. передаёт существующую memory и выбранный transcript отдельному summarizer
-   prompt из [`compact.md`](compact.md), без tools;
-4. сохраняет структурированную Markdown memory в `meta.json` и отмечает
-   `throughMessageId`;
-5. следующие запросы получают memory в `<session_memory>`, а исходные старые
-   сообщения остаются на диске и в UI, но больше не тратят context window;
-6. при ошибке/пустом ответе модели применяется детерминированный extractive
-   fallback, сохраняющий цели, file/tool actions, команды, ошибки и next step.
-
-Повторное сжатие объединяет предыдущую memory с новой порцией истории. Запустить
-вручную можно `/compact` или `tinycode compact [session]`.
-
-## Хранение сессий
-
-```text
-~/.tinytcode/
-  config.json
-  history.json
-  sessions/
-    ses_xxx/
-      meta.json
-      messages.jsonl
+```json
+{
+  "mcp": {
+    "enabled": true,
+    "servers": {
+      "local": {
+        "enabled": true,
+        "command": "node",
+        "args": ["C:/mcp/server.mjs"],
+        "env": {},
+        "safe": false
+      }
+    }
+  }
+}
 ```
 
-Assistant message хранит ordered parts: `reasoning`, `text`, `tool`, следующий
-`text`. Поэтому thinking, tool result и финальный ответ не смешиваются после
-перезапуска или экспорта. Compacted memory хранится в `meta.json`; исходные
-`messages.jsonl` не удаляются.
+Поддерживаются stdio JSON-RPC серверы и их tools. HTTP transports, resources и
+prompts пока нет. `safe: true` отключает approval только для явно доверенного
+сервера.
+
+### Переменные окружения
+
+| Переменная | Назначение |
+| --- | --- |
+| `TINYCODE_HOME` | каталог config/history/sessions |
+| `TINYCODE_MODEL` | модель по умолчанию |
+| `TINYCODE_OLLAMA_URL` / `OLLAMA_HOST` | адрес Ollama |
+| `TINYCODE_PROMPT` | файл системного промта |
+| `TINYCODE_COMPACTION_PROMPT` | промт суммаризатора |
+
+---
+
+## Модели и железо
+
+TinyCode создан под небольшие модели и один GPU. Ориентиры для **8 ГБ VRAM**
+(например, RTX 3050), `parallel=1`:
+
+| Модель | Q4 вес | Помещается | Ожидаемо |
+| --- | ---: | --- | --- |
+| Qwen3-8B Q4_K_M | 5.0 ГБ | целиком | ~28 tok/s, рабочий дефолт |
+| Qwen3-14B Q4_K_M | 9.3 ГБ | частично | ~5–10 tok/s, тяжёлые задачи |
+| 27B Q4 | 16–17 ГБ | нет | только удалённый Ollama или 24 ГБ VRAM |
+
+Цифры — ориентиры, а не гарантия: скорость зависит от контекста, кванта и
+свободной VRAM. Большой `num_ctx` увеличивает KV-cache и может вытеснить слои в
+CPU; TinyCode предупредит об этом.
+
+Практическое правило: **8B Q4 решает однофайловые баги с падающим тестом**,
+14B заметно лучше держит многошаговый план, 27B локально почти не окупается —
+каждый шаг агента занимает минуты. Подробный разбор и замеры:
+[`docs/LOCAL_MODEL_EVALUATION.md`](docs/LOCAL_MODEL_EVALUATION.md).
+
+---
 
 ## Архитектура
 
 ```text
 src/
-  cli.ts                       argv, run, npm binary, doctor
+  cli.ts                     argv, run/resume/compact/models/tools/doctor
   core/
-    chat.ts                    agent-loop, approvals, compaction, abort/retry
-    ollama-runtime.ts          безопасный local startup и parallel
-    compaction.ts              план, context pressure, model/fallback summary
-    context.ts                 system/user/tool context + trimming
-    project-instructions.ts    AGENTS/TINYCODE/CLAUDE instructions
-    prompt/                    agent + compaction prompts
-    provider/model-details.ts  context/thinking capabilities и HF workaround
-    provider/ollama.ts         Ollama NDJSON + thinking stream
-    session/                   JSONL storage и Markdown export
-    config/                    defaults, env overrides, persistence
-    bus.ts                     typed UI events
+    chat.ts                  agent loop, approvals, compaction, abort/retry
+    context.ts               system/user/tool context + trimming
+    compaction.ts            план сжатия, context pressure, fallback summary
+    task-guard.ts            completion / plan / blocked detection
+    ollama-runtime.ts        локальный старт и parallel
+    provider/                Ollama NDJSON, model capabilities, HF workaround
+    prompt/                  agent и compaction prompts
+    session/                 JSONL storage, память, экспорт
+    config/                  defaults, env, persistence, sampling
+    bus.ts                   типизированные события UI
   tools/
-    registry.ts                реестр и определения
-    parse.ts                   <tool_call> parser + stream filter
-    file-tools.ts              базовые файловые операции
-    advanced-file-tools.ts     edit/batch/path operations
-    search-tools.ts            glob и content search
-    patch-tool.ts              checked unified diff
-    git-tools.ts               status/diff/log/show
-    process-tools.ts           managed background processes
-    fetch-tool.ts              HTTP/HTTPS text fetch
-    command-tool.ts            cmd/shell с timeout
-    say-tool.ts                обычное сообщение
-    paths.ts                   cwd + symlink containment
-    change-feedback.ts         no-op/verification/workspace stamp и diff preview
+    registry.ts              реестр, профили и стадии
+    parse.ts                 <tool_call> parser + stream filter
+    file-tools.ts            базовые файловые операции
+    advanced-file-tools.ts   edit/batch/path
+    search-tools.ts          glob и content search
+    patch-tool.ts            checked unified diff
+    verify-tool.ts           детект стека и запуск проверок
+    lsp-tool.ts              LSP diagnostics / syntax fallback
+    process-tools.ts         managed background processes
+    ...
+  mcp/                       клиент локальных stdio-серверов
   tui/
-    app.ts                     layout, input, scroll, approvals
-    logo.ts                    CMD-art logo
-    dialog.ts                  approval overlay
-    transcript.ts              ordered thinking/text/tool parts
-    terminal.ts / keys.ts      raw mode, wheel events, keyboard
-    screen.ts                  diff renderer
-    markdown.ts / picker.ts    presentation
+    app.ts                   layout, ввод, scroll, approvals
+    logo.ts                  wordmark с градиентом
+    transcript.ts            ordered reasoning/text/tool parts
+    ...
 ```
 
-Направление зависимостей: `CLI/TUI → ChatService → Provider/Tools/Session`.
-Ядро не пишет ANSI и может позже использоваться сервером или desktop UI.
+Направление зависимостей: `CLI/TUI → ChatService → Provider / Tools / Session`.
+Ядро не печатает ANSI, поэтому его можно использовать в другом фронтенде.
 
 Подробнее: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Разработка и проверки
+---
+
+## Разработка
 
 ```bash
-npm run typecheck
-npm run build
-npm run smoke
-npm run mock
-npm run smoke:tui
-npm pack --dry-run
+npm run typecheck     # tsc --noEmit
+npm run build         # dist/
+npm run smoke         # layout + agent loop + tools
+npm run smoke:tui     # Terminal → KeyParser → TUI → tool → answer
+npm run mock          # mock Ollama на localhost
+npm pack --dry-run    # содержимое npm-пакета
 ```
 
-`npm run smoke` проверяет markdown/layout, CMD-art welcome, approval dialog,
-mouse parser, context/tool protocol, полный agent-loop, ручное/автоматическое
-сжатие, все файловые/search/git/network/process tools и cmd.
-`smoke:tui` прогоняет настоящий `Terminal → KeyParser → TUI → tool → final`.
+Smoke-набор детерминированный и не вызывает реальные модели. Он проверяет
+профили и стадии tools, read-before-edit, repair, sampling, обрезку observations,
+`verify`, MCP discovery/call, syntax fallback, approval-диалог, контекст и
+completion guard.
 
-`scripts/features-smoke.ts` дополнительно проверяет model/thinking/context flow,
-кликабельный parallel, отсутствие реальных Windows environment writes в тестах,
-автозапуск/managed restart, Off/named modes, counters, cancellation и completion guard.
+Реальный прогон на установленной Ollama:
 
-Реальную проверку установленной Ollama (без mock) можно повторить диагностическим
-скриптом `node scripts/evaluate-models.mjs <profile>`. Он создаёт отдельную
-песочницу, сохраняет запросы/ответы/метрики и не меняет ваш конфиг.
-Подробный разбор результатов и ограничений —
-[`docs/LOCAL_MODEL_EVALUATION.md`](docs/LOCAL_MODEL_EVALUATION.md).
+```bash
+node scripts/evaluate-models.mjs <profile> [seconds]
+```
 
-## Текущие ограничения
+Скрипт создаёт отдельную песочницу и сохраняет запросы, ответы и метрики, не
+трогая ваш конфиг.
 
-- только Ollama;
-- text-protocol tools вместо native function calling;
-- нет MCP, LSP, проектного `.tinycode.json` и syntax highlighting;
-- approval действует только до завершения текущего процесса;
-- системный scrollback недоступен в alternate screen — используйте колесо,
-  `PgUp/PgDn` или `/export`.
+---
+
+## Ограничения
+
+- только Ollama, без других провайдеров;
+- текстовый протокол tools вместо native function calling;
+- MCP — только stdio/tools, без HTTP, resources и prompts;
+- LSP требует установленного language server; syntax fallback не заменяет его
+  полностью;
+- нет проектного `.tinycode.json` и syntax highlighting;
+- approval действует до завершения процесса;
+- alternate screen скрывает системный scrollback — используйте колесо,
+  `PgUp/PgDn` или `/export`;
+- harness проверяет действия и запускает проверки, но не доказывает семантическую
+  корректность любого кода.
+
+---
+
+## Документация
+
+| Документ | О чём |
+| --- | --- |
+| [`docs/RELEASE_0.5.md`](docs/RELEASE_0.5.md) | что изменилось в 0.5 и что осталось выключенным |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | слои, потоки данных, инварианты |
+| [`docs/LOCAL_MODEL_EVALUATION.md`](docs/LOCAL_MODEL_EVALUATION.md) | замеры на реальных моделях и выводы |
+| [`promt.md`](promt.md) | системный промт агента |
+| [`compact.md`](compact.md) | промт суммаризации сессии |
+
+---
 
 ## Лицензия
 
-MIT.
+[MIT](LICENSE).
+
+<div align="center">
+
+Сделано для тех, у кого 8 ГБ VRAM и много терпения.
+
+</div>

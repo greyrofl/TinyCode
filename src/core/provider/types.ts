@@ -5,6 +5,14 @@ export type ThinkingMode = string;
 
 export interface ModelDetails extends ModelInfo {
   contextLength?: number;
+  samplingDefaults?: {
+    temperature?: number;
+    topP?: number;
+    topK?: number;
+    minP?: number;
+    repeatPenalty?: number;
+    presencePenalty?: number;
+  };
   thinking: {
     modes: ThinkingMode[];
     defaultMode: ThinkingMode;

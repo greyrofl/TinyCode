@@ -4,12 +4,13 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Bus } from "./core/bus.js";
 import { ChatService } from "./core/chat.js";
-import { loadConfig, saveConfig } from "./core/config/config.js";
+import { loadConfig, saveConfig, type Config } from "./core/config/config.js";
 import { loadCompactionPrompt } from "./core/prompt/compact.js";
 import { loadSystemPrompt, type SystemPromptInfo } from "./core/prompt/system.js";
 import { OllamaProvider } from "./core/provider/ollama.js";
 import { OllamaRuntime } from "./core/ollama-runtime.js";
 import { SessionStore } from "./core/session/store.js";
+import { attachMcpTools, type McpConnectionResult } from "./mcp/manager.js";
 import { createDefaultTools, type ToolRegistry } from "./tools/registry.js";
 import type { ToolApprovalRequest } from "./tools/types.js";
 import { displayWidth, padEndWidth } from "./util/ansi.js";
@@ -38,7 +39,7 @@ const COMMANDS = new Set([
   "help",
   "version",
 ]);
-const VALUE_FLAGS = new Set(["model", "session", "cwd", "think", "context"]);
+const VALUE_FLAGS = new Set(["model", "session", "cwd", "think", "context", "profile"]);
 const SHORT_FLAGS: Record<string, string> = {
   m: "model",
   s: "session",
@@ -144,6 +145,7 @@ Options
       --thinking        stream thinking to stderr in run mode
       --think <mode>    generation mode: off, on, auto, or a supported named level
       --context <n>     Ollama context size for this session (num_ctx)
+      --profile <name>  tools: auto, plan, edit, or full
       --cwd <dir>       working directory recorded in the session
       --json            machine-readable output for models/sessions/config
   -h, --help            show this help
@@ -172,13 +174,21 @@ interface Bootstrapped {
   prompt: SystemPromptInfo;
   compactionPrompt: SystemPromptInfo;
   runtime: OllamaRuntime;
+  mcp: McpConnectionResult;
 }
 
 async function bootstrap(parsed: ParsedArgs): Promise<Bootstrapped> {
   const loaded = await loadConfig();
   if (flagBool(parsed, "yes")) loaded.config.tools.autoApprove = true;
+  const profile = flagValue(parsed, "profile");
+  if (profile) {
+    if (!["auto", "plan", "edit", "full"].includes(profile)) throw new Error(`Unknown tool profile: ${profile}`);
+    loaded.config.tools.profile = profile as Config["tools"]["profile"];
+  }
 
   const tools = createDefaultTools();
+  const cwd = resolveCwd(parsed);
+  const mcp = await attachMcpTools(tools, loaded.config, cwd);
   const prompt = loadSystemPrompt(tools.definitions(), loaded.config);
   const compactionPrompt = loadCompactionPrompt(loaded.config);
 
@@ -190,7 +200,6 @@ async function bootstrap(parsed: ParsedArgs): Promise<Bootstrapped> {
     headers: loaded.config.ollama.headers,
   });
   const store = new SessionStore();
-  const cwd = resolveCwd(parsed);
   const chat = new ChatService({
     config: loaded.config,
     provider,
@@ -202,7 +211,7 @@ async function bootstrap(parsed: ParsedArgs): Promise<Bootstrapped> {
     compactionPrompt: compactionPrompt.text,
   });
   const runtime = new OllamaRuntime(loaded.config.ollama);
-  return { loaded, bus, chat, provider, store, tools, prompt, compactionPrompt, runtime };
+  return { loaded, bus, chat, provider, store, tools, prompt, compactionPrompt, runtime, mcp };
 }
 
 async function prepareRuntime(runtime: OllamaRuntime): Promise<void> {
@@ -233,7 +242,7 @@ async function runTui(parsed: ParsedArgs, sessionId?: string): Promise<number> {
     return 1;
   }
 
-  const { loaded, bus, chat, prompt, compactionPrompt, tools, runtime } = await bootstrap(parsed);
+  const { loaded, bus, chat, prompt, compactionPrompt, tools, runtime, mcp } = await bootstrap(parsed);
   const cwd = resolveCwd(parsed);
   const requestedSession = sessionId ?? flagValue(parsed, "session");
 
@@ -263,6 +272,10 @@ async function runTui(parsed: ParsedArgs, sessionId?: string): Promise<number> {
     promptSource: prompt.source,
     compactionPromptSource: compactionPrompt.source,
     runtime,
+    startupNotices: [
+      ...mcp.connected.map((text) => ({ text: `MCP connected: ${text}`, level: "info" as const })),
+      ...mcp.errors.map((text) => ({ text: `MCP unavailable: ${text}`, level: "warn" as const })),
+    ],
     onModelChange: async (model) => {
       loaded.config.model = model;
       loaded.fileConfig.model = model;
@@ -572,6 +585,8 @@ async function doctor(parsed: ParsedArgs): Promise<number> {
     `tools     ${tools.size}${loaded.config.tools.enabled ? "" : " (disabled)"} · approval ${
       loaded.config.tools.autoApprove ? "auto" : "ask"
     }`,
+    `profile   ${loaded.config.tools.profile}`,
+    `mcp       ${Object.values(loaded.config.mcp.servers).filter((server) => server.enabled).length} configured`,
     `prompt    ${prompt.usedFallback ? "built-in fallback" : shortPath(prompt.source)}`,
     `compact   ${loaded.config.compaction.enabled ? `${loaded.config.compaction.auto ? "auto" : "manual"} · ${(loaded.config.compaction.threshold * 100).toFixed(0)}%` : "disabled"} · ${compactPrompt.usedFallback ? "built-in prompt" : shortPath(compactPrompt.source)}`,
   ];

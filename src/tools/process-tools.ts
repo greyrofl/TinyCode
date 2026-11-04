@@ -174,7 +174,7 @@ export function createProcessTools(manager: ProcessManager): Tool[] {
         type: "object",
         properties: {
           id: { type: "string", description: "Process id returned by start_process." },
-          lines: { type: "integer", description: "Recent output lines. Default: 80, max: 500." },
+          lines: { type: "integer", description: "Recent output lines (max 500).", default: 80 },
         },
         required: ["id"],
         additionalProperties: false,

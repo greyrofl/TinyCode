@@ -20,6 +20,9 @@ Then stop and wait for [Observation: ...]. Use relative paths and double-quoted
 keys and strings. Encode newlines inside JSON strings as \n. Do not wrap calls in
 Markdown fences. Use only the tools and arguments listed below.
 
+Exact function edit example (oldText is the complete old body and differs from newText):
+<tool_call>{"name":"edit_file","arguments":{"path":"src/file.js","oldText":"export function value() {\n  return 1;\n}","newText":"export function value() {\n  return 2;\n}"}}</tool_call>
+
 Use previous observations. Do not repeat unchanged reads or failed commands.
 If blocked, state the actual blocker. A plan or promise is not completed work:
 continue calling tools until the requested action and verification have happened.

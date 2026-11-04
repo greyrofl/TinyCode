@@ -10,8 +10,8 @@ export const fetchUrlTool: Tool = {
       type: "object",
       properties: {
         url: { type: "string", description: "Absolute http:// or https:// URL." },
-        maxChars: { type: "integer", description: "Maximum response characters. Default: 20000, max: 100000." },
-        timeoutMs: { type: "integer", description: "Timeout. Default: 20000, max: 120000." },
+        maxChars: { type: "integer", description: "Maximum response characters (max 100000).", default: 20000 },
+        timeoutMs: { type: "integer", description: "Request timeout in milliseconds (max 120000).", default: 20000 },
       },
       required: ["url"],
       additionalProperties: false,

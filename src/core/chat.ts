@@ -17,16 +17,17 @@ import { truncateWidth } from "../util/ansi.js";
 import { singleLine } from "../util/text.js";
 import type { ChatMessage, ModelDetails, ModelInfo, Provider } from "./provider/types.js";
 import { thinkingValue } from "./provider/model-details.js";
+import { renderSystemPrompt, toolRepairHint } from "./prompt/system.js";
 import { loadProjectInstructions } from "./project-instructions.js";
 import type { SessionStore } from "./session/store.js";
 import type { Message, Session, SessionMeta, TextPart, ToolPart } from "./session/types.js";
 import { textOf } from "./session/types.js";
 import { mergeUsage, type ChatStatus, type ContextUsage } from "./types.js";
 import { looksLikePlan, reportsBlocked, taskRequirements } from "./task-guard.js";
-import { isVerificationCommand, verificationKinds } from "../tools/change-feedback.js";
+import { verificationKinds } from "../tools/change-feedback.js";
 import { parseToolCalls, ToolCallStreamFilter, type ParsedToolCall } from "../tools/parse.js";
-import type { ToolRegistry } from "../tools/registry.js";
-import type { Tool, ToolApprovalHandler, ToolApprovalRequest } from "../tools/types.js";
+import type { AutoToolStage, ToolRegistry } from "../tools/registry.js";
+import type { Tool, ToolApprovalHandler, ToolApprovalRequest, ToolProfile } from "../tools/types.js";
 
 export interface ChatServiceOptions {
   config: Config;
@@ -62,6 +63,38 @@ function safeSummary(tool: Tool, input: Record<string, unknown>): string {
 function canonicalFile(cwd: string, file: string): string {
   const absolute = path.resolve(cwd, file);
   return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+}
+
+function fullToolIntent(text: string): boolean {
+  return /(?:https?:\/\/|\b(?:curl|wget|install|fetch|download)\b|start (?:a )?(?:server|process)|run (?:this |the )?command|execute (?:this |the )?command|git (?:commit|checkout|push|pull|merge|rebase)|запусти (?:сервер|процесс|команд)|установи|скачай|отправь.*http)/i.test(text);
+}
+
+function callReadPaths(call: ParsedToolCall, cwd: string): string[] {
+  if (call.name === "read_file") return [canonicalFile(cwd, String(call.arguments.path ?? ""))];
+  if (call.name === "read_files" && Array.isArray(call.arguments.paths)) return call.arguments.paths.map((file) => canonicalFile(cwd, String(file)));
+  return [];
+}
+
+function editRequiredPaths(call: ParsedToolCall, cwd: string): string[] {
+  if (["edit_file", "replace_file"].includes(call.name)) return [canonicalFile(cwd, String(call.arguments.path ?? ""))];
+  return [];
+}
+
+function fingerprint(tool: string, output: string): string {
+  return `${tool}:${output.toLowerCase().replace(/[a-f0-9]{8,}/g, "#").replace(/\d+(?:\.\d+)?/g, "#").replace(/\s+/g, " ").slice(0, 500)}`;
+}
+
+function repairSuggestion(tool: string, output: string, input: Record<string, unknown>): string {
+  if (tool === "find_files" && /no matches/i.test(output)) {
+    const pattern = String(input.pattern ?? "*");
+    return `The previous glob found nothing. For nested files use **/${pattern.replace(/^\*\*\//, "")}; do not repeat the same glob.`;
+  }
+  if (tool === "search_text" && /no matches/i.test(output)) return "The search is literal unless regex=true. Change query/path/include or read the known file directly.";
+  if (["edit_file", "replace_file", "apply_patch"].includes(tool)) return "Read the current file again, then use its exact current text. Do not guess or submit the same edit.";
+  if (tool === "execute_command" || tool === "verify") return "Do not repeat the same failing check. Read the first reported file/line and fix that concrete error.";
+  if (tool.startsWith("git_") && /not a git repository/i.test(output)) return "This workspace is not a Git repository. Stop using Git tools and inspect files directly.";
+  if (/escapes the working directory/i.test(output)) return "Use a path relative to the working directory; do not use an absolute path or '..'.";
+  return `This failure already occurred. Do not repeat ${tool} with equivalent arguments; choose a different next action.`;
 }
 
 const PROJECT_MUTATING_TOOLS = new Set([
@@ -163,7 +196,7 @@ export class ChatService {
   }
 
   get toolDefinitions() {
-    return this.tools?.definitions() ?? [];
+    return this.tools?.definitions(this.config.tools.profile === "auto" ? "full" : this.config.tools.profile) ?? [];
   }
 
   get contextCompaction(): SessionMeta["compaction"] {
@@ -432,20 +465,43 @@ export class ChatService {
     this.bus.emit("status", status);
   }
 
-  private generationOptions(): Record<string, unknown> {
+  private generationOptions(agent = false): Record<string, unknown> {
     const generation = this.config.generation;
-    const qwen = this.modelDetailsCache.get(this.currentModel ?? "")?.family === "qwen3";
-    const usePreset = qwen && generation.temperature === 0.2 && generation.topP === 0.9;
+    const details = this.modelDetailsCache.get(this.currentModel ?? "");
+    const preference = this.config.models[this.currentModel ?? ""]?.sampling;
+    const profile = preference?.profile ?? generation.samplingProfile;
     const thinking = this.currentThinking !== "off";
+    const qwen = details?.family === "qwen3";
+    const preset = profile === "model" ? details?.samplingDefaults
+      : profile === "qwen3-thinking" ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0, repeatPenalty: 1 }
+      : profile === "qwen3-fast" ? { temperature: 0.7, topP: 0.8, topK: 20, minP: 0, repeatPenalty: 1 }
+      : profile === "auto" ? qwen
+        ? thinking
+          ? { ...details?.samplingDefaults, temperature: details?.samplingDefaults?.temperature ?? 0.6, topP: details?.samplingDefaults?.topP ?? 0.95, topK: details?.samplingDefaults?.topK ?? 20, minP: details?.samplingDefaults?.minP ?? 0 }
+          : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0, repeatPenalty: 1 }
+        : details?.samplingDefaults
+      : undefined;
+    const sampling = {
+      temperature: preference?.temperature ?? preset?.temperature ?? generation.temperature,
+      topP: preference?.topP ?? preset?.topP ?? generation.topP,
+      topK: preference?.topK ?? preset?.topK,
+      minP: preference?.minP ?? preset?.minP,
+      repeatPenalty: preference?.repeatPenalty ?? preset?.repeatPenalty ?? generation.repeatPenalty,
+      presencePenalty: preference?.presencePenalty ?? preset?.presencePenalty,
+    };
     return {
-      temperature: usePreset ? thinking ? 0.6 : 0.7 : generation.temperature,
-      top_p: usePreset ? thinking ? 0.95 : 0.8 : generation.topP,
-      ...(usePreset ? { top_k: 20, min_p: 0 } : {}),
+      temperature: sampling.temperature,
+      top_p: sampling.topP,
+      ...(sampling.topK !== undefined ? { top_k: sampling.topK } : {}),
+      ...(sampling.minP !== undefined ? { min_p: sampling.minP } : {}),
+      ...(sampling.presencePenalty !== undefined ? { presence_penalty: sampling.presencePenalty } : {}),
       num_ctx: this.contextLimit,
       num_predict: generation.numPredict,
-      repeat_penalty: usePreset ? 1 : generation.repeatPenalty,
+      repeat_penalty: sampling.repeatPenalty,
       ...(generation.seed !== null ? { seed: generation.seed } : {}),
-      ...(generation.stop.length > 0 ? { stop: generation.stop } : {}),
+      ...((generation.stop.length > 0 || (agent && this.config.tools.stopAfterToolCall))
+        ? { stop: [...generation.stop, ...(agent && this.config.tools.stopAfterToolCall ? ["</tool_call>"] : [])] }
+        : {}),
       ...this.config.ollama.extraOptions,
     };
   }
@@ -460,10 +516,13 @@ export class ChatService {
     return project ? `${base.trimEnd()}\n\n${project}\n` : base;
   }
 
-  private systemPromptFor(session: Session): string {
+  private systemPromptFor(session: Session, stage: AutoToolStage = "full"): string {
     const base = this.baseSystemPromptFor(session);
     const memory = compactedMemory(session);
-    return memory ? `${base.trimEnd()}\n\n${memory}\n` : base;
+    const definitions = this.tools?.definitionsFor(this.config.tools.profile, stage) ?? [];
+    const profile = this.config.tools.profile === "auto" ? `auto:${stage}` : this.config.tools.profile;
+    const rendered = renderSystemPrompt(base, definitions, profile);
+    return memory ? `${rendered.trimEnd()}\n\n${memory}\n` : rendered;
   }
 
   private contextBudget(systemPrompt?: string): Config["context"] {
@@ -687,13 +746,20 @@ export class ChatService {
       this.bus.emit("message.delta", { messageId: assistant.id, part: "text", delta: text });
     };
 
+    const requestContext = context.map((message) => ({ ...message }));
+    if (this.currentThinking === "off" && this.modelDetailsCache.get(session.meta.model)?.family === "qwen3") {
+      const latestUser = requestContext.findLastIndex((message) => message.role === "user" && !message.content.trimStart().startsWith("[Observation:"));
+      if (latestUser >= 0 && !requestContext[latestUser]!.content.trimStart().startsWith("/no_think")) {
+        requestContext[latestUser]!.content = `/no_think\n${requestContext[latestUser]!.content}`;
+      }
+    }
     const stream = this.provider.chat({
       model: session.meta.model,
-      messages: context,
+      messages: requestContext,
       signal,
       think: thinkingValue(this.currentThinking, this.modelDetailsCache.get(session.meta.model)),
       keepAlive: this.config.ollama.keepAlive,
-      options: this.generationOptions(),
+      options: this.generationOptions(true),
     });
 
     for await (const event of stream) {
@@ -833,7 +899,9 @@ export class ChatService {
       part.status = result.ok ? "completed" : "error";
       part.changed = result.changed ?? (result.ok && PROJECT_MUTATING_TOOLS.has(call.name) && call.name !== "execute_command");
       part.changedPaths = result.changedPaths;
-      part.verification = result.ok && call.name === "execute_command" && isVerificationCommand(String(call.arguments.command ?? ""));
+      part.readPaths = result.readPaths;
+      part.verificationKinds = result.verificationKinds ?? (result.ok && call.name === "execute_command" ? [...verificationKinds(String(call.arguments.command ?? ""))] : []);
+      part.verification = result.ok && part.verificationKinds.length > 0;
       part.output = result.output;
       if (!result.ok) part.error = result.output;
       part.endedAt = Date.now();
@@ -903,12 +971,24 @@ export class ChatService {
     let stopped = false;
     let projectVersion = 0;
     const seenCalls = new Map<string, number>();
+    const callFailures = new Map<string, string>();
+    const failureCounts = new Map<string, number>();
     const request = [...session.messages].reverse().find((message) => message.role === "user");
     const required = taskRequirements(request ? textOf(request) : "");
     const requestedText = request ? textOf(request) : "";
     const needsTest = required.tests && /(?:\btests?\b|тест)/i.test(requestedText);
     const needsBuild = required.tests && /(?:\bbuild\b|сборк|собери)/i.test(requestedText);
     const checkedKinds = new Set<string>();
+    const readPaths = new Set<string>();
+    for (const message of session.messages) {
+      for (const part of message.parts) {
+        if (part.type !== "tool" || part.status !== "completed") continue;
+        const read = part.readPaths ?? callReadPaths({ name: part.tool, arguments: part.input }, session.meta.cwd);
+        for (const file of read) readPaths.add(canonicalFile(session.meta.cwd, file));
+      }
+    }
+    let stage: AutoToolStage = this.config.tools.profile === "full" || (this.config.tools.profile === "auto" && fullToolIntent(requestedText))
+      ? "full" : this.config.tools.profile === "edit" ? "edit" : this.config.tools.profile === "plan" ? "plan" : readPaths.size ? "edit" : "plan";
     let changed = false;
     let verified = false;
     let stalls = 0;
@@ -955,7 +1035,7 @@ export class ChatService {
         iteration++;
         this.setStatus({ state: "connecting" });
 
-        const systemPrompt = toolsEnabled ? this.systemPromptFor(session) : compactedMemory(session);
+        const systemPrompt = toolsEnabled ? this.systemPromptFor(session, stage) : compactedMemory(session);
         const context = buildContext(
           activeMessages(session),
           this.contextBudget(systemPrompt),
@@ -970,7 +1050,13 @@ export class ChatService {
 
         const parsed = parseToolCalls(rawText);
         if (parsed.errors.length > 0) {
-          this.addToolFailure(assistant, parsed.errors.join("\n"));
+          const repair = parsed.issues.map((issue) => {
+            const definition = issue.toolName ? this.tools?.definition(issue.toolName) : undefined;
+            return definition
+              ? toolRepairHint(definition, issue.fragment, issue.message)
+              : `${issue.message}\nFragment: ${issue.fragment || "(empty)"}\nUse one listed tool, valid one-line JSON, and the exact argument names from the active profile.`;
+          }).join("\n\n");
+          this.addToolFailure(assistant, repair || parsed.errors.join("\n"));
           if (++stalls >= this.config.tools.maxStalledSteps) {
             assistant.error = "Stopped after repeated malformed tool calls; no verified completion.";
             break;
@@ -992,11 +1078,27 @@ export class ChatService {
 
         for (const call of parsed.calls.slice(0, 4)) {
           if (controller.signal.aborted) break;
+          if (!this.tools?.isAllowedFor(this.config.tools.profile, stage, call.name)) {
+            this.addToolFailure(assistant, `Tool ${call.name} is unavailable in profile ${this.config.tools.profile === "auto" ? `auto:${stage}` : this.config.tools.profile}. Use one of the tools listed in the current system prompt${this.config.tools.profile === "auto" && stage === "plan" ? "; read a relevant file to unlock edit tools" : ""}.`);
+            if (++stalls >= this.config.tools.maxStalledSteps) assistant.error = "Stopped after repeated unavailable tool calls.";
+            if (assistant.error) break;
+            continue;
+          }
+          const unread = editRequiredPaths(call, session.meta.cwd).filter((file) => !readPaths.has(file));
+          if (unread.length) {
+            this.addToolFailure(assistant, `read_before_edit: ${call.name} is blocked because these files were not read in this session: ${unread.map((file) => path.relative(session.meta.cwd, file)).join(", ")}. Call read_file/read_files first, then use the exact current content.`);
+            if (++stalls >= this.config.tools.maxStalledSteps) assistant.error = "Stopped after repeated edits without reading current files.";
+            if (assistant.error) break;
+            continue;
+          }
           const signature = `${call.name}:${JSON.stringify(call.arguments)}`;
           if (!volatileTools.has(call.name) && seenCalls.get(signature) === projectVersion) {
+            const previous = callFailures.get(signature);
             this.addToolFailure(
               assistant,
-              `Duplicate tool call blocked: ${call.name} with the same arguments already ran and project state has not changed. Use the previous observation and choose the next action.`,
+              previous
+                ? `Duplicate tool call blocked: you already tried ${call.name} with these arguments. Previous result: ${previous.slice(0, 700)}\nNext action: ${repairSuggestion(call.name, previous, call.arguments)}`
+                : `Duplicate tool call blocked: ${call.name} with the same arguments already ran and project state has not changed. Use the previous observation and choose the next action.`,
             );
             if (++stalls >= this.config.tools.maxStalledSteps) assistant.error = "Stopped: repeated unchanged tool calls made no progress. Use the previous results or change the task.";
             if (assistant.error) break;
@@ -1012,21 +1114,40 @@ export class ChatService {
             );
           if (completed?.status === "completed") stalls = 0;
           else if (!stop) stalls++;
+          if (completed?.status === "completed") {
+            for (const file of completed.readPaths ?? callReadPaths(call, session.meta.cwd)) readPaths.add(canonicalFile(session.meta.cwd, file));
+            if (this.config.tools.profile === "auto" && stage === "plan" && readPaths.size) stage = "edit";
+          }
           if (completed?.status === "completed" && completed.changed) {
             projectVersion++;
             changed = true;
             verified = false;
+            if (this.config.tools.profile === "auto" && stage !== "full") stage = "verify";
             checkedKinds.clear();
             for (const file of completed.changedPaths ?? []) unreadChangedPaths.add(canonicalFile(session.meta.cwd, file));
           }
+          const failureOutput = completed?.status === "error" ? completed.error ?? completed.output ?? ""
+            : completed?.status === "completed" && /\(no matches\)/i.test(completed.output ?? "") ? completed.output ?? "" : "";
+          if (completed && failureOutput) {
+            callFailures.set(signature, failureOutput);
+            const key = fingerprint(call.name, failureOutput);
+            const count = (failureCounts.get(key) ?? 0) + 1;
+            failureCounts.set(key, count);
+            if (count >= 2) {
+              const hint = `\n\nRepeated failure (${count}×). ${repairSuggestion(call.name, failureOutput, call.arguments)}`;
+              if (completed.error) completed.error += hint;
+              completed.output = `${completed.output ?? failureOutput}${hint}`;
+              this.emitTool(assistant, completed);
+            }
+          }
           if (completed?.verification) {
-            for (const kind of verificationKinds(String(call.arguments.command ?? ""))) checkedKinds.add(kind);
+            for (const kind of completed.verificationKinds ?? []) checkedKinds.add(kind);
             verified = (!needsTest || checkedKinds.has("test")) && (!needsBuild || checkedKinds.has("build"));
             if (verified) unreadChangedPaths.clear();
           } else if (completed?.status === "completed" && changed && !required.tests) {
-            const readPaths = call.name === "read_file" || call.name === "file_info"
+            const readPaths = completed.readPaths ?? (call.name === "read_file" || call.name === "file_info"
               ? [String(call.arguments.path ?? "")]
-              : call.name === "read_files" && Array.isArray(call.arguments.paths) ? call.arguments.paths.map(String) : [];
+              : call.name === "read_files" && Array.isArray(call.arguments.paths) ? call.arguments.paths.map(String) : []);
             for (const file of readPaths) unreadChangedPaths.delete(canonicalFile(session.meta.cwd, file));
             if (readPaths.length && unreadChangedPaths.size === 0) verified = true;
             if (call.name === "list_dir" && completed.status === "completed") {

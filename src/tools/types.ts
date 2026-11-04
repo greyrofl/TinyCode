@@ -25,7 +25,12 @@ export interface ToolDefinition {
   safe: boolean;
   /** Short human-readable summary shown in the transcript and approval dialog. */
   summary(input: Record<string, unknown>): string;
+  /** Used in repair feedback and the compact system prompt. */
+  example?: Record<string, unknown>;
 }
+
+export type ToolProfile = "auto" | "plan" | "edit" | "verify" | "full";
+export type ToolTier = "read" | "write" | "verify" | "full" | "always";
 
 export interface ToolContext {
   cwd: string;
@@ -43,6 +48,9 @@ export interface ToolResult {
   /** Actual workspace change, not merely a successful tool invocation. */
   changed?: boolean;
   changedPaths?: string[];
+  verificationKinds?: string[];
+  /** Files whose contents were actually returned, including partial reads. */
+  readPaths?: string[];
 }
 
 export interface Tool {

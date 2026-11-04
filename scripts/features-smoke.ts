@@ -13,11 +13,15 @@ import { parseModelDetails } from "../src/core/provider/model-details.js";
 import type { ChatOptions, ChatStreamEvent, ModelDetails, Provider } from "../src/core/provider/types.js";
 import { SessionStore } from "../src/core/session/store.js";
 import { createDefaultTools } from "../src/tools/registry.js";
+import { toolRepairHint } from "../src/core/prompt/system.js";
+import { parseToolCalls } from "../src/tools/parse.js";
 import { TinyCodeTui } from "../src/tui/app.js";
 import { Picker, renderPicker } from "../src/tui/picker.js";
 import { getPalette } from "../src/tui/theme.js";
 import { taskRequirements } from "../src/core/task-guard.js";
 import { isVerificationCommand } from "../src/tools/change-feedback.js";
+import { buildContext } from "../src/core/context.js";
+import { attachMcpTools } from "../src/mcp/manager.js";
 
 const base = process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, "Temp", "opencode") : os.tmpdir();
@@ -34,7 +38,11 @@ class Replay implements Provider {
   async listModels() { return [{ id: "replay", name: "replay" }]; }
   async health() { return { ok: true }; }
   async getModelDetails(model: string): Promise<ModelDetails> {
-    return { id: model, name: model, contextLength: 16384, thinking: { modes: ["off", "on"], defaultMode: "off", control: "native" } };
+    return {
+      id: model, name: model, family: "qwen3", contextLength: 16384,
+      samplingDefaults: { temperature: 0.6, topP: 0.95, topK: 20, minP: 0, repeatPenalty: 1 },
+      thinking: { modes: ["off", "on"], defaultMode: "off", control: "native" },
+    };
   }
   async *chat(options: ChatOptions): AsyncIterable<ChatStreamEvent> {
     this.requests.push(options);
@@ -70,6 +78,18 @@ try {
   assert.deepEqual(taskRequirements("Исправь код и запусти тесты."), { change: true, tests: true });
   assert.equal(isVerificationCommand("npm test || echo passed"), false);
   assert.equal(isVerificationCommand("npm test | cat"), false);
+  const olderOutput = `HEAD-${"a".repeat(7000)}-TAIL`;
+  const latestOutput = `LATEST-${"b".repeat(8000)}-END`;
+  const observationContext = buildContext([
+    { id: "obs-u", role: "user", createdAt: 1, parts: [{ type: "text", text: "inspect" }] },
+    { id: "obs-a", role: "assistant", createdAt: 2, parts: [
+      { type: "tool", callId: "old", tool: "read_file", input: { path: "a" }, status: "completed", output: olderOutput },
+      { type: "tool", callId: "new", tool: "execute_command", input: { command: "test" }, status: "error", error: latestOutput },
+    ] },
+  ], { maxMessages: 10, maxChars: 30_000 });
+  const observations = observationContext.filter((message) => message.role === "user").map((message) => message.content);
+  assert(observations.some((value) => value.includes("chars omitted") && value.includes("-TAIL")));
+  assert(observations.some((value) => value.includes(latestOutput)));
 
   const plan = await fixture("plan", ["I will fix the file."]);
   await plan.chat.send("Fix the code");
@@ -77,6 +97,34 @@ try {
   assert.match(plan.chat.current!.messages.at(-1)!.error!, /without verified completion/);
   assert.equal(await readFile(path.join(plan.cwd, "src/main.mjs"), "utf8"), "export const answer = 41;\n");
   plan.tools.dispose();
+
+  const profiles = createDefaultTools();
+  assert.equal(profiles.definitionsFor("auto", "plan").some((tool) => tool.name === "edit_file"), false);
+  assert.equal(profiles.definitionsFor("auto", "plan").some((tool) => tool.name === "verify"), true);
+  assert.equal(profiles.definitionsFor("auto", "edit").some((tool) => tool.name === "edit_file"), true);
+  assert.equal(profiles.definitionsFor("auto", "edit").some((tool) => tool.name === "execute_command"), false);
+  assert.equal(profiles.definitionsFor("auto", "full").some((tool) => tool.name === "execute_command"), true);
+  const signature = toolRepairHint(profiles.definition("search_text")!, '{"name":"search_text","arguments":{', "Invalid JSON");
+  assert.match(signature, /query:string!/);
+  assert.match(signature, /regex:boolean\?/);
+  assert.match(signature, /literal/);
+  assert.match(signature, /Valid example/);
+  assert.equal(parseToolCalls('<tool_call>{"name":"search_text","arguments":{</tool_call>').issues[0]?.toolName, "search_text");
+  profiles.dispose();
+
+  const readGuard = await fixture("read-guard", [
+    call("edit_file", { path: "src/main.mjs", oldText: "41", newText: "42" }),
+    call("read_file", { path: "src/main.mjs" }),
+    call("edit_file", { path: "src/main.mjs", oldText: "41", newText: "42" }),
+    call("read_file", { path: "src/main.mjs" }),
+    "Done after reading and editing the file.",
+  ]);
+  readGuard.config.tools.profile = "edit";
+  await readGuard.chat.send("Fix the code");
+  const guardError = readGuard.chat.current!.messages.at(-1)!.parts.find((part) => part.type === "tool" && part.synthetic)?.error;
+  assert.match(guardError!, /read_before_edit/);
+  assert.equal(readGuard.chat.current!.messages.at(-1)!.outcome, "completed");
+  readGuard.tools.dispose();
 
   const repeated = await fixture("repeat", [call("read_file", { path: "src/main.mjs" })]);
   await repeated.chat.send("Read and explain the file");
@@ -99,6 +147,7 @@ try {
   cancellation.tools.dispose();
 
   const denied = await fixture("denied", [
+    call("read_file", { path: "src/main.mjs" }),
     call("edit_file", { path: "src/main.mjs", oldText: "41", newText: "42" }),
     "Blocked: I cannot edit without permission.",
   ]);
@@ -109,7 +158,7 @@ try {
   denied.tools.dispose();
 
   const alreadyPassing = await fixture("already-pass", [
-    call("execute_command", { command: "npm test" }),
+    call("verify", { mode: "quick" }),
     "All tests already pass. No changes needed.",
   ]);
   await writeFile(path.join(alreadyPassing.cwd, "src/main.mjs"), "export const answer = 42;\n");
@@ -118,8 +167,9 @@ try {
   alreadyPassing.tools.dispose();
 
   const syntaxOnly = await fixture("syntax-only", [
+    call("read_file", { path: "src/main.mjs" }),
     call("edit_file", { path: "src/main.mjs", oldText: "41", newText: "42" }),
-    call("execute_command", { command: "node --check src/main.mjs" }),
+    call("diagnostics", { path: "src/main.mjs" }),
     "All tests passed.",
   ]);
   await syntaxOnly.chat.send("Fix the code and run tests");
@@ -130,7 +180,7 @@ try {
   const success = await fixture("success", [
     call("read_file", { path: "src/main.mjs" }),
     call("edit_file", { path: "src/main.mjs", oldText: "answer = 41", newText: "answer = 42" }),
-    call("execute_command", { command: "npm test" }),
+    call("verify", { mode: "quick" }),
     "Done. The code changed and npm test passed.",
   ]);
   await success.chat.send("Fix the code and run tests");
@@ -143,6 +193,29 @@ try {
   assert.equal(success.chat.contextUsage.tokens, 120);
   assert.equal(success.chat.contextUsage.maxTokens, 4096);
   assert.equal(success.chat.contextUsage.estimated, false);
+  const systemPrompts = success.provider.requests.map((request) => request.messages[0]?.content ?? "");
+  assert.match(systemPrompts[0]!, /Active profile: auto:plan/);
+  assert.doesNotMatch(systemPrompts[0]!, /### edit_file/);
+  assert.match(systemPrompts[1]!, /Active profile: auto:edit/);
+  assert.match(systemPrompts[1]!, /### edit_file/);
+  assert.match(systemPrompts[2]!, /Active profile: auto:verify/);
+  assert.doesNotMatch(systemPrompts[2]!, /### execute_command/);
+  assert.equal(success.provider.requests[0]!.options?.temperature, 0.7);
+  assert.equal(success.provider.requests[0]!.options?.top_p, 0.8);
+
+  const customSampling = await fixture("sampling", ["A direct answer."]);
+  customSampling.config.models.replay!.sampling = { profile: "custom", temperature: 0.33, topP: 0.77, topK: 11, repeatPenalty: 1.02 };
+  await customSampling.chat.send("Explain this project");
+  assert.equal(customSampling.provider.requests[0]!.options?.temperature, 0.33);
+  assert.equal(customSampling.provider.requests[0]!.options?.top_p, 0.77);
+  assert.equal(customSampling.provider.requests[0]!.options?.top_k, 11);
+  customSampling.tools.dispose();
+
+  const stopExperiment = await fixture("stop-experiment", [call("list_dir", { path: "." }), "Done."]);
+  stopExperiment.config.tools.stopAfterToolCall = true;
+  await stopExperiment.chat.send("List files");
+  assert((stopExperiment.provider.requests[0]!.options?.stop as string[]).includes("</tool_call>"));
+  stopExperiment.tools.dispose();
 
   const beforeNoop = await readFile(path.join(success.cwd, "src/main.mjs"), "utf8");
   const noop = await success.tools.get("edit_file")!.run(
@@ -163,6 +236,17 @@ try {
   );
   assert.equal(command.ok, true);
   assert.equal(command.changed, false);
+  await writeFile(path.join(success.cwd, "src/broken.js"), "export const = ;\n");
+  const badDiagnostic = await success.tools.get("diagnostics")!.run(
+    { path: "src/broken.js", waitMs: 500 }, { cwd: success.cwd, config: success.config, signal: new AbortController().signal },
+  );
+  assert.equal(badDiagnostic.ok, false);
+  assert.match(badDiagnostic.output, /SyntaxError|Unexpected token|exit code: 1/i);
+  await writeFile(path.join(success.cwd, "src/broken.js"), "export const valid = 1;\n");
+  const goodDiagnostic = await success.tools.get("diagnostics")!.run(
+    { path: "src/broken.js", waitMs: 500 }, { cwd: success.cwd, config: success.config, signal: new AbortController().signal },
+  );
+  assert.equal(goodDiagnostic.ok, true);
   console.log("ok completion / repeat guard / no-op / change feedback / context counters");
 
   await assert.rejects(success.chat.setThinking("high"), /Unsupported/);
@@ -301,6 +385,30 @@ try {
     else process.env.OLLAMA_NUM_PARALLEL = previousParallel;
   }
   console.log("ok automatic local startup / managed restart / remote safety (no real environment writes)");
+
+  const mcpServer = path.join(root, "fake-mcp.mjs");
+  await writeFile(mcpServer, `
+import { createInterface } from "node:readline";
+const lines = createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") console.log(JSON.stringify({ jsonrpc:"2.0", id:msg.id, result:{ protocolVersion:"2025-06-18", capabilities:{ tools:{} }, serverInfo:{ name:"fake", version:"1" } } }));
+  else if (msg.method === "tools/list") console.log(JSON.stringify({ jsonrpc:"2.0", id:msg.id, result:{ tools:[{ name:"echo", description:"Echo one value.", inputSchema:{ type:"object", properties:{ value:{ type:"string", description:"Value to echo.", enum:["hello","world"], default:"hello" } }, required:["value"] } }] } }));
+  else if (msg.method === "tools/call") console.log(JSON.stringify({ jsonrpc:"2.0", id:msg.id, result:{ content:[{ type:"text", text:"echo:"+msg.params.arguments.value }] } }));
+});
+`, "utf8");
+  const mcpConfig = defaultConfig();
+  mcpConfig.mcp.servers.fake = { enabled: true, command: process.execPath, args: [mcpServer], env: {}, cwd: process.cwd(), safe: true };
+  const mcpRegistry = createDefaultTools();
+  const mcp = await attachMcpTools(mcpRegistry, mcpConfig, root);
+  assert.equal(mcp.errors.length, 0);
+  assert.equal(mcp.connected.length, 1);
+  const mcpTool = mcpRegistry.get("mcp_fake_echo")!;
+  assert.deepEqual(mcpTool.definition.parameters.properties.value.enum, ["hello", "world"]);
+  const mcpResult = await mcpTool.run({ value: "hello" }, { cwd: root, config: mcpConfig, signal: new AbortController().signal });
+  assert.equal(mcpResult.output, "echo:hello");
+  mcpRegistry.dispose();
+  console.log("ok MCP stdio discovery and tool call");
   console.log("all feature checks passed");
 } finally {
   if (previousHome === undefined) delete process.env.TINYCODE_HOME;

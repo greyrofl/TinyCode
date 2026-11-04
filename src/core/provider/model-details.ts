@@ -8,6 +8,11 @@ export function parseModelDetails(model: string, raw: Record<string, unknown>): 
   const contextValue = Object.entries(info).find(([key]) => key.endsWith(".context_length"))?.[1];
   const capabilities = Array.isArray(raw.capabilities) ? raw.capabilities : [];
   const metadata = raw.thinking as { values?: unknown[]; default?: unknown } | undefined;
+  const parameterText = typeof raw.parameters === "string" ? raw.parameters : "";
+  const parameterMap = Object.fromEntries(parameterText.split(/\r?\n/).flatMap((line) => {
+    const match = /^([a-z_]+)\s+(-?\d+(?:\.\d+)?)\s*$/.exec(line.trim());
+    return match ? [[match[1]!, Number(match[2])]] : [];
+  }));
   const modeFor = (value: unknown): string | null =>
     value === false ? "off" : value === true ? "on" : typeof value === "string" && value.trim() ? value : null;
   const discovered = metadata?.values?.map(modeFor).filter((mode): mode is string => mode !== null);
@@ -29,6 +34,14 @@ export function parseModelDetails(model: string, raw: Record<string, unknown>): 
     parameterSize: typeof details.parameter_size === "string" ? details.parameter_size : undefined,
     quantization: typeof details.quantization_level === "string" ? details.quantization_level : undefined,
     contextLength: typeof contextValue === "number" && Number.isFinite(contextValue) ? contextValue : undefined,
+    samplingDefaults: {
+      temperature: parameterMap.temperature,
+      topP: parameterMap.top_p,
+      topK: parameterMap.top_k,
+      minP: parameterMap.min_p,
+      repeatPenalty: parameterMap.repeat_penalty,
+      presencePenalty: parameterMap.presence_penalty,
+    },
     thinking: {
       modes,
       defaultMode,
