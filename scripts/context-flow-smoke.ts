@@ -105,12 +105,13 @@ type Controls = {
   transcript: { build(width: number): Array<Array<{ text: string }>> };
 };
 
-async function makeUi(name: string, failures = 0, blockRelease = false) {
+async function makeUi(name: string, failures = 0, blockRelease = false, savedContext?: number) {
   const cwd = path.join(root, name);
   await mkdir(cwd, { recursive: true });
   const config = defaultConfig();
   config.model = "fake-gemma:26b";
   config.generation.numPredict = 512;
+  if (savedContext !== undefined) config.models["fake-gemma:26b"] = { thinking: "off", numCtx: savedContext };
   const model = new ModelSimulator();
   model.startupFailures = failures;
   model.blockRelease = blockRelease;
@@ -190,6 +191,24 @@ try {
   await unchanged.stop();
   console.log("ok welcome -> first message -> one load -> context choice -> reply / warm reuse");
 
+  // The saved per-model context is loaded directly: no 8k warmup and no
+  // unload/reload when the picker confirms the same size.
+  const warm = await makeUi("saved-context", 0, false, 32768);
+  const warmPicker = warm.nextPicker();
+  warm.input("Привет\r");
+  await warmPicker;
+  assert.deepEqual(warm.model.loads.map((item) => item.numCtx), [32768]);
+  assert(!warm.ui.picker!.options.footer?.includes("restart required"));
+  warm.choose(32768);
+  await warm.chat.waitForIdle();
+  assert.equal(warm.model.loads.length, 1, "same context must not reload");
+  assert(!warm.model.events.includes("unload"), "same context must not unload");
+  assert.equal(warm.serverRestarts(), 0);
+  assert.equal(warm.chat.contextLimit, 32768);
+  assert.equal(warm.model.requests[0]!.options?.num_ctx, 32768);
+  await warm.stop();
+  console.log("ok saved context -> direct 32k load -> same picker value -> no restart");
+
   const changed = await makeUi("changed-context");
   const changedPicker = changed.nextPicker();
   changed.input("Привет\r");
@@ -221,6 +240,8 @@ try {
   assert.equal(recovered.serverRestarts(), 1);
   assert.equal(recovered.model.requests.length, 1);
   assert.equal(recovered.model.loads.length, 3);
+  assert.equal(recovered.chat.contextLimit, 8192, "OOM falls back to the 8k baseline");
+  assert.equal(recovered.model.requests[0]!.options?.num_ctx, 8192);
   await recovered.stop();
 
   const failed = await makeUi("bounded-failure", 9);
@@ -230,13 +251,13 @@ try {
   failed.choose(32768);
   await failed.chat.waitForIdle();
   assert.equal(failed.serverRestarts(), 1);
-  assert.equal(failed.model.requests.length, 0);
+  assert.equal(failed.model.requests.length, 1, "the prompt completes at the 8k fallback");
   assert.equal(failed.model.loads.length, 3, "do not repeatedly retry an allocation that cannot fit");
   assert.equal(failed.chat.contextLimit, 8192);
-  assert.match(failed.chat.current!.messages.at(-1)!.error!, /out of memory/);
+  assert.equal(failed.chat.current!.messages.at(-1)!.error, undefined);
   assert.equal(textOf(failed.chat.current!.messages[0]!), "Привет");
   await failed.stop();
-  console.log("ok one verified-server fallback / bounded OOM retry / original prompt and context retained");
+  console.log("ok one verified-server fallback / OOM reduces to 8k and completes / original prompt retained");
 
   const cancelled = await makeUi("cancel-selection");
   const cancelPicker = cancelled.nextPicker();

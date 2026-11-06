@@ -75,6 +75,14 @@ const COMMANDS: Array<{ name: string; description: string }> = [
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/** A failed context allocation should degrade to the small baseline once. */
+const FALLBACK_CONTEXT = 8192;
+const OUT_OF_MEMORY = /out.of.memory|outofdevicememory|cuda error|failed to allocate|alloc(?:ation|ating)[^\n]*failed|requires more[^\n]*memory|insufficient[^\n]*memory|not enough[^\n]*memory/i;
+
+function isOutOfMemory(error: unknown): boolean {
+  return OUT_OF_MEMORY.test(errorMessage(error));
+}
+
 /**
  * The terminal UI. It only reads ChatService state and calls its public API;
  * all core events arrive through the bus. This keeps the agent logic reusable
@@ -1134,6 +1142,43 @@ export class TinyCodeTui {
     this.scheduleRender();
   }
 
+  /**
+   * Start the runner at the context saved for this model. The old flow always
+   * warmed up at min(context, 8k) and then restarted to the real size, which
+   * looked like a restart even when the user picked the same value. If the
+   * saved size cannot be allocated, retry once at 8k; callers persist that
+   * smaller size so the next start does not repeat the failed allocation.
+   */
+  private async loadModelWithFallback(
+    signal: AbortSignal,
+    model: string,
+    desired: number,
+  ): Promise<{ running: RunningModelInfo; tokens: number }> {
+    const before = await this.readMemoryStatus();
+    try {
+      const running = await this.options.chat.loadCurrentModel(signal, desired);
+      if (!running) throw new Error(`${this.options.chat.engineName} did not report a loaded model.`);
+      return { running, tokens: desired };
+    } catch (error) {
+      const fallback = Math.min(FALLBACK_CONTEXT, desired);
+      if (signal.aborted || desired <= fallback || !isOutOfMemory(error)) throw error;
+      this.transcript.notice(
+        `${this.options.chat.engineName} could not load ${model} with ${desired.toLocaleString("en-US")} context (${errorMessage(error)}). Retrying with ${fallback.toLocaleString("en-US")}.`,
+        "warn",
+      );
+      this.options.chat.clearLoadedRunner();
+      try { await this.options.runtime?.restartServer?.(signal); } catch { /* External/remote engines keep their server. */ }
+      const baselineFree = before?.gpus.reduce((sum, gpu) => sum + gpu.freeBytes, 0);
+      await this.options.runtime?.waitForMemoryRelease?.(before, 0, signal,
+        baselineFree === undefined ? undefined : Math.max(0, baselineFree - 256 * 1024 ** 2));
+      await this.options.chat.setContextSize(fallback, { duringSetup: true });
+      const running = await this.options.chat.loadCurrentModel(signal, fallback);
+      if (!running) throw new Error(`${this.options.chat.engineName} did not report a loaded model after reducing the context.`);
+      this.transcript.notice(`Context reduced to ${fallback.toLocaleString("en-US")} tokens after out-of-memory.`, "info");
+      return { running, tokens: fallback };
+    }
+  }
+
   private async preparePromptContext(signal: AbortSignal): Promise<void> {
     const model = this.options.chat.currentModel ?? this.options.config.model;
     if (!this.options.chat.managesRunner) {
@@ -1168,13 +1213,21 @@ export class TinyCodeTui {
       ]);
       if (signal.aborted || this.exiting) throw new Error("Model loading cancelled.");
       this.parallel = parallel;
-      const loadContext = Math.min(details.contextLength ?? 8192, Math.max(2048, Math.min(this.options.chat.contextLimit, 8192)));
+      // Start from the context already saved for this model instead of a
+      // temporary 8k baseline. The picker then sees the same physical size and
+      // selecting it does not unload/reload the runner.
+      const loadContext = Math.max(256, Math.min(details.contextLength ?? this.options.chat.contextLimit, this.options.chat.contextLimit));
       if (!running) {
         this.options.chat.clearLoadedRunner();
-        running = await this.options.chat.loadCurrentModel(signal, loadContext);
-      } else if (this.options.chat.currentProvider === "llama.cpp" && this.options.chat.loadedRunnerContext === null) {
-        // Adopt an existing matching llama-server without changing its physical context.
-        running = await this.options.chat.loadCurrentModel(signal, running.contextLength);
+        const loaded = await this.loadModelWithFallback(signal, model, loadContext);
+        running = loaded.running;
+        if (loaded.tokens !== loadContext) await this.saveModelPreference();
+      } else if (this.options.chat.loadedRunnerContext === null) {
+        // Adopt an already loaded runner without changing its physical context.
+        // This also covers a TUI started after the engine, where the cache is
+        // empty even though /props or /api/ps reports the right context.
+        const adopted = await this.options.chat.loadCurrentModel(signal, running.contextLength);
+        if (adopted) running = adopted;
       }
       if (!running) throw new Error(`${this.options.chat.engineName} loaded the model but did not report its runner allocation.`);
       if (signal.aborted || this.exiting) throw new Error("Model loading cancelled.");
@@ -1276,10 +1329,33 @@ export class TinyCodeTui {
     const signal = selection?.signal ?? ownedController!.signal;
     const previous = this.options.chat.contextLimit;
     this.changingContext = true;
+    let applied = tokens;
     try {
+      const runningNow = await this.options.chat.getRunningModel(signal).catch(() => null);
+      const loadedNow = this.options.chat.loadedRunnerContext;
+      const matchesRunning = Boolean(runningNow) && runningNow!.contextLength === tokens &&
+        (loadedNow === tokens || loadedNow === null);
+      if (tokens === previous && !this.runnerRecoveryRequired && (!runningNow || matchesRunning)) {
+        // Picking the size that is already loaded is a no-op: no unload, no
+        // reload, and the live token counters stay intact. Adopt an externally
+        // started runner once so later checks know its physical context.
+        if (runningNow && loadedNow === null) {
+          const adopted = await this.options.chat.loadCurrentModel(signal, tokens);
+          if (adopted) this.runningSnapshot = adopted;
+        }
+        if (runningNow) {
+          this.contextReadyModel = this.options.chat.currentModel;
+          this.transcript.notice(`${this.options.chat.engineName} already runs ${tokens.toLocaleString("en-US")} tokens; no restart.`, "info");
+        }
+        selection?.finish(tokens);
+        return;
+      }
+
       await this.options.chat.setContextSize(tokens, { duringSetup: Boolean(selection) });
       const current = await this.options.chat.getRunningModel(signal);
-      const reuse = current && !this.runnerRecoveryRequired && this.options.chat.loadedRunnerContext === tokens && current.contextLength >= tokens;
+      const loaded = this.options.chat.loadedRunnerContext;
+      const reuse = current && !this.runnerRecoveryRequired &&
+        (loaded === tokens || (loaded === null && current.contextLength === tokens)) && current.contextLength >= tokens;
       if (!reuse && (current || selection || this.options.chat.loadedRunnerInfo)) {
         const model = this.options.chat.currentModel ?? this.options.config.model;
         this.loadingText = current ? `Restarting ${this.options.chat.engineName} · ${model}…` : `Loading model ${model}…`;
@@ -1288,9 +1364,9 @@ export class TinyCodeTui {
         let forced = current ? await this.resetRunnerMemory(signal) : false;
         const beforeAllocation = await this.readMemoryStatus();
         try {
-          const running = await this.options.chat.loadCurrentModel(signal, tokens);
-          if (!running) throw new Error("The new runner did not report its loaded context.");
-          this.runningSnapshot = running;
+          const result = await this.loadModelWithFallback(signal, model, tokens);
+          applied = result.tokens;
+          this.runningSnapshot = result.running;
         } catch (error) {
           if (signal.aborted || forced || !/out.of.memory|CUDA|failed.*process|server startup/i.test(errorMessage(error)) || !this.options.runtime?.restartServer) throw error;
           forced = true;
@@ -1300,14 +1376,14 @@ export class TinyCodeTui {
           await this.options.runtime.waitForMemoryRelease(beforeAllocation, 0, signal,
             baselineFree === undefined ? undefined : Math.max(0, baselineFree - 256 * 1024 ** 2));
           this.options.chat.clearLoadedRunner();
-          const running = await this.options.chat.loadCurrentModel(signal, tokens);
-          if (!running) throw new Error(`${this.options.chat.engineName} did not load the selected context after restart.`);
-          this.runningSnapshot = running;
+          const result = await this.loadModelWithFallback(signal, model, tokens);
+          applied = result.tokens;
+          this.runningSnapshot = result.running;
         }
-        this.transcript.notice(`${this.options.chat.engineName} ${forced ? "server restarted" : "runner ready"} · ${tokens.toLocaleString("en-US")} tokens.`, "info");
+        this.transcript.notice(`${this.options.chat.engineName} ${forced ? "server restarted" : "runner ready"} · ${applied.toLocaleString("en-US")} tokens.`, "info");
       }
-      if (this.options.chat.loadedRunnerContext !== null && this.options.chat.loadedRunnerContext !== tokens) {
-        throw new Error(`${this.options.chat.engineName} reported ${this.options.chat.loadedRunnerContext.toLocaleString("en-US")} loaded tokens instead of ${tokens.toLocaleString("en-US")}. The selected context was not applied.`);
+      if (this.options.chat.loadedRunnerContext !== null && this.options.chat.loadedRunnerContext !== applied) {
+        throw new Error(`${this.options.chat.engineName} reported ${this.options.chat.loadedRunnerContext.toLocaleString("en-US")} loaded tokens instead of ${applied.toLocaleString("en-US")}. The selected context was not applied.`);
       }
       if (this.options.chat.loadedRunnerInfo) {
         this.runningSnapshot = this.options.chat.loadedRunnerInfo;
@@ -1316,15 +1392,15 @@ export class TinyCodeTui {
           running: this.runningSnapshot,
           hardware: await this.readMemoryStatus(),
           parallel: this.parallel?.value,
-          requestedContext: tokens,
+          requestedContext: applied,
           forceCpu: this.options.chat.cpuOnly,
         });
       }
       if (signal.aborted) throw new Error("Engine context change cancelled.");
       await this.saveModelPreference();
       this.runnerRecoveryRequired = false;
-      if (this.options.chat.loadedRunnerContext === tokens) this.contextReadyModel = this.options.chat.currentModel;
-      selection?.finish(tokens);
+      if (this.options.chat.loadedRunnerContext === applied) this.contextReadyModel = this.options.chat.currentModel;
+      selection?.finish(applied);
     } catch (error) {
       this.contextReadyModel = null;
       this.runnerRecoveryRequired = true;

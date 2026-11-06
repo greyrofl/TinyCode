@@ -60,6 +60,7 @@ class Replay implements Provider {
     yield { type: "done", usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 } };
   }
   async loadModel(options: { model: string; numCtx: number }) {
+    if (this.running?.id === options.model && this.running.contextLength === options.numCtx) return this.running;
     this.loads.push({ model: options.model, numCtx: options.numCtx });
     this.running = { id: options.model, sizeBytes: 6_000_000_000, sizeVramBytes: 4_000_000_000, contextLength: options.numCtx };
     return this.running;
@@ -664,7 +665,7 @@ try {
   assert.equal(ui.pickerKind, "context");
   assert.match(ui.picker.options.message!, /Max context:/);
   assert(ui.picker.options.items.some((item) => item.detail?.includes("RAM ctx")));
-  assert.deepEqual(success.provider.loads.at(-1), { model: "replay", numCtx: 8192 });
+  assert.deepEqual(success.provider.loads.at(-1), { model: "replay", numCtx: 16384 });
   (ui as unknown as { picker: Picker | null; pickerKind: string | null }).picker = null;
   (ui as unknown as { picker: Picker | null; pickerKind: string | null }).pickerKind = null;
   await ui.applyPickerSelection("context", { value: "4096", label: "4,096 tokens" });
@@ -674,6 +675,40 @@ try {
   assert.deepEqual(success.provider.loads.at(-1), { model: "replay", numCtx: 4096 });
   assert.equal(success.provider.requests.at(-1)!.options?.num_ctx, 4096);
   assert.equal(success.provider.requests.at(-1)!.options?.num_batch, 256);
+
+  // Regression: a fresh TUI (empty runner cache) must adopt the already loaded
+  // runner instead of unloading and reloading the same context.
+  const loadsBeforeSame = success.provider.loads.length;
+  const unloadsBeforeSame = success.provider.unloads.length;
+  success.chat.clearLoadedRunner();
+  await ui.openContextPicker();
+  await ui.applyPickerSelection("context", { value: "4096", label: "4,096 tokens" });
+  assert.equal(success.provider.loads.length, loadsBeforeSame, "same context must not reload the runner");
+  assert.equal(success.provider.unloads.length, unloadsBeforeSame, "same context must not unload the runner");
+  assert.equal(success.chat.loadedRunnerContext, 4096, "existing runner was adopted");
+
+  // Out of memory at a larger saved context falls back to 8k once.
+  await success.chat.setContextSize(16384);
+  const originalLoadModel = success.provider.loadModel.bind(success.provider);
+  success.provider.loadModel = async (options: { model: string; numCtx: number }) => {
+    if (options.numCtx > 8192) {
+      success.provider.loads.push({ ...options });
+      throw new Error("llama-server startup failed: CUDA error: out of memory");
+    }
+    return originalLoadModel(options);
+  };
+  try {
+    const loadWithFallback = (tui as unknown as {
+      loadModelWithFallback(signal: AbortSignal, model: string, desired: number): Promise<{ running: RunningModelInfo; tokens: number }>;
+    }).loadModelWithFallback.bind(tui);
+    const fallback = await loadWithFallback(new AbortController().signal, "replay", 16384);
+    assert.equal(fallback.tokens, 8192);
+    assert.equal(success.chat.contextLimit, 8192);
+    assert.deepEqual(success.provider.loads.at(-1), { model: "replay", numCtx: 8192 });
+  } finally {
+    success.provider.loadModel = originalLoadModel;
+  }
+
   const loadsBeforeModelChange = success.provider.loads.length;
   await ui.setModel("other");
   assert.equal(ui.pickerKind, "thinking");

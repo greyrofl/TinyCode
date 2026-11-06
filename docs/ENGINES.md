@@ -85,9 +85,11 @@ x64/arm64, а также совместимые CUDA сборки из рели�
 ## Процесс, память и генерация
 
 Welcome screen и выбор модели не загружают веса. Первое сообщение сохраняется;
-затем TinyCode запускает собственный server с baseline ≤8192, измеряет buffers
-и `/props`, открывает context picker. Неизменный context переиспользуется;
-изменение требует остановки точного child PID, ожидания VRAM и нового server.
+затем TinyCode запускает собственный server с context, сохранённым для модели
+(в пределах model limit), измеряет buffers и `/props`, открывает context picker.
+При OOM сервер один раз перезапускается с 8192, размер сохраняется и capacity
+пересчитывается. Неизменный context переиспользуется; изменение требует
+остановки точного child PID, ожидания VRAM и нового server.
 Новый `--ctx-size` проверяется как per-slot `n_ctx`; `parallel` по умолчанию 1.
 
 Для своего server TinyCode задаёт loopback bind, случайный process-only API key,

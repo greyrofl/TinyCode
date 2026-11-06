@@ -544,6 +544,9 @@ export class ChatService {
     if (this.busy && !options.duringSetup) throw new Error("Cannot change context during generation.");
     if (tokens > (details.contextLength ?? 1_048_576)) throw new Error(`Model context limit is ${details.contextLength} tokens.`);
     const session = this.requireSession();
+    // Re-selecting the active size must not reset live token counters or emit
+    // a session change; callers can treat it as a no-op.
+    if (session.meta.numCtx === tokens) return;
     session.meta.numCtx = tokens;
     delete session.meta.lastContext;
     this.liveContext = null;
@@ -1052,7 +1055,7 @@ export class ChatService {
     }
   }
 
-  async loadCurrentModel(signal?: AbortSignal, numCtx = Math.min(this.contextLimit, 8192)): Promise<RunningModelInfo | null> {
+  async loadCurrentModel(signal?: AbortSignal, numCtx = this.contextLimit): Promise<RunningModelInfo | null> {
     if (!this.provider.loadModel) return null;
     const allowed = new Set(["num_batch", "num_gpu", "main_gpu", "use_mmap", "num_thread", "draft_num_predict"]);
     const runnerOptions: Record<string, unknown> = {

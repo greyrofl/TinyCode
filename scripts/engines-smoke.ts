@@ -526,15 +526,17 @@ try {
     await ui.applyPickerSelection("context", { value: "32768", label: "32,768 tokens" });
     await prompt;
     assert.equal(restartCount, 1);
-    assert.equal(sim.spawns.length, 3, "exactly one retry after the selected context fails startup");
+    assert.equal(sim.spawns.length, 3, "one fallback spawn after the selected context fails startup");
     assert.equal(textOf(chat.current!.messages[0]!), "Original prompt");
-    if (failures === 1) { assert.equal(sim.requests.length, 1); assert.equal(chat.contextLimit, 32768); }
-    else { assert.equal(sim.requests.length, 0); assert.equal(chat.contextLimit, 8192); assert.match(chat.current!.messages.at(-1)!.error!, /out of memory/); }
+    assert.equal(sim.requests.length, 1, "the prompt completes at the 8k fallback");
+    assert.equal(chat.contextLimit, 8192);
+    assert.equal(sim.context, 8192);
+    assert.equal(chat.current!.messages.at(-1)!.error, undefined);
     tools.dispose(); await runtime.dispose();
   }
   await contextFailureCase("recovered-llama-context", 1);
   await contextFailureCase("failed-llama-context", 9);
-  console.log("ok llama.cpp startup OOM / one cleanup + retry / bounded failure restores context and retains original prompt");
+  console.log("ok llama.cpp startup OOM / one cleanup + 8k fallback / original prompt completes");
 
   const cliSimulator = new LlamaSimulator(); cliSimulator.ready = true;
   const server = createServer(async (request, response) => {

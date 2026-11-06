@@ -334,8 +334,11 @@ shift отключён. Ошибка actual token budget останавлива�
 TUI не загружает веса при startup/new/model selection. `ChatService.send`
 сначала сохраняет User message, затем вызывает cancellable `beforeGenerate`.
 TUI использует готовую модель либо запускает llama-server / пустой Ollama load
-с baseline `min(selected, 8192)`. `/props` (llama.cpp) или `/api/ps` (Ollama)
-проверяет loaded context, после чего выбор приостанавливает generation.
+с context, уже сохранённым для этой модели (в пределах model limit). Если
+allocation падает с out-of-memory, выполняется один повтор с 8192, новое
+значение сохраняется и capacity пересчитывается. `/props` (llama.cpp) или
+`/api/ps` (Ollama) проверяет loaded context, после чего выбор приостанавливает
+generation.
 Общий `runtime.ts` читает физическую RAM и, если доступен `nvidia-smi`, NVIDIA
 VRAM. Remote/external server работает без allocation telemetry и помечается
 `unknown`, а не RAM-only.
@@ -357,6 +360,9 @@ headroom RAM/VRAM. Значения выше memory estimate disabled в UI; cus
 `applyContextValue` показывает `Restarting {engine}`, выгружает выбранный
 Ollama runner / собственный llama-server и ждёт VRAM recovery. После загрузки выбранного размера
 завершается `beforeGenerate`, и ответ начинается без дополнительной аллокации.
+Повторный выбор уже загруженного размера не выгружает runner, не запускает
+новый load и не сбрасывает live token counters. Если выбранный больший context
+падает с OOM, TinyCode один раз переходит на 8192 и продолжает prompt.
 Изменение логического бюджета без изменения физического runner не используется.
 
 `runnerContext` хранит известные load-sensitive options. Load/chat/compaction
