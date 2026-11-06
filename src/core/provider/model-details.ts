@@ -13,6 +13,36 @@ export function parseModelDetails(model: string, raw: Record<string, unknown>): 
     const match = /^([a-z_]+)\s+(-?\d+(?:\.\d+)?)\s*$/.exec(line.trim());
     return match ? [[match[1]!, Number(match[2])]] : [];
   }));
+  const number = (suffix: string): number | undefined => {
+    const value = Object.entries(info).find(([key]) => key.endsWith(suffix))?.[1];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const blocks = number(".block_count");
+  const heads = number(".attention.head_count");
+  const kvHeads = number(".attention.head_count_kv");
+  const embedding = number(".embedding_length");
+  const keyLength = number(".attention.key_length") ?? (embedding && heads ? embedding / heads : undefined);
+  const valueLength = number(".attention.value_length") ?? keyLength;
+  let contextMemory: ModelDetails["contextMemory"];
+  if (blocks && kvHeads && keyLength && valueLength) {
+    contextMemory = { variableKvBytesPerToken: blocks * kvHeads * (keyLength + valueLength) * 2, confidence: "metadata" };
+  } else if (family === "gemma4" && blocks && heads && keyLength && valueLength) {
+    // Gemma 4 stores five sliding-window layers followed by one global layer.
+    // Array metadata is omitted by non-verbose /api/show, but this architecture
+    // has a stable pattern. Only global layers grow with num_ctx.
+    const globalLayers = Math.floor(blocks / 6);
+    const localLayers = blocks - globalLayers;
+    const globalKvHeads = Math.max(1, heads / 8);
+    const localKvHeads = Math.max(1, heads / 2);
+    const keySwa = number(".attention.key_length_swa") ?? keyLength;
+    const valueSwa = number(".attention.value_length_swa") ?? valueLength;
+    const window = number(".attention.sliding_window") ?? 1024;
+    contextMemory = {
+      variableKvBytesPerToken: globalLayers * globalKvHeads * (keyLength + valueLength) * 2,
+      fixedKvBytes: localLayers * localKvHeads * (keySwa + valueSwa) * 2 * window,
+      confidence: "heuristic",
+    };
+  }
   const modeFor = (value: unknown): string | null =>
     value === false ? "off" : value === true ? "on" : typeof value === "string" && value.trim() ? value : null;
   const discovered = metadata?.values?.map(modeFor).filter((mode): mode is string => mode !== null);
@@ -34,6 +64,7 @@ export function parseModelDetails(model: string, raw: Record<string, unknown>): 
     parameterSize: typeof details.parameter_size === "string" ? details.parameter_size : undefined,
     quantization: typeof details.quantization_level === "string" ? details.quantization_level : undefined,
     contextLength: typeof contextValue === "number" && Number.isFinite(contextValue) ? contextValue : undefined,
+    contextMemory,
     samplingDefaults: {
       temperature: parameterMap.temperature,
       topP: parameterMap.top_p,

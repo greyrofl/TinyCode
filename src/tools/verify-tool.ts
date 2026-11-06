@@ -56,7 +56,7 @@ async function run(command: string, context: ToolContext): Promise<{ code: numbe
 export const verifyTool: Tool = {
   definition: {
     name: "verify",
-    description: "Detect project stack and run its typecheck/tests; full also runs lint/build.",
+    description: "Detect project stack and run its typecheck/tests; full also runs lint/build. Requires command approval.",
     parameters: {
       type: "object",
       properties: { mode: { type: "string", description: "quick: typecheck+tests; full: also lint+build.", enum: ["quick", "full"], default: "quick" } },

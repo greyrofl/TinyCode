@@ -8,6 +8,7 @@ import {
   removeDir,
   writeJsonAtomic,
   writeJsonl,
+  writeJsonlAtomic,
 } from "../../util/fs.js";
 import { sessionsDir } from "../../util/paths.js";
 import { newSessionId } from "../../util/id.js";
@@ -17,6 +18,7 @@ const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
 export interface CreateSessionInput {
   model: string;
+  provider?: string;
   cwd: string;
   title?: string;
 }
@@ -27,7 +29,8 @@ export interface CreateSessionInput {
  *   ~/.tinytcode/sessions/<id>/messages.jsonl
  *
  * JSONL is appended as messages complete, so a crash loses at most the
- * message that was being generated.
+ * message that was being generated. In-turn compaction checkpoints rewrite
+ * the complete raw history atomically before advancing the memory cursor.
  */
 export class SessionStore {
   constructor(private readonly root: string = sessionsDir()) {}
@@ -66,6 +69,7 @@ export class SessionStore {
       id,
       title: input.title ?? "New session",
       model: input.model,
+      ...(input.provider ? { provider: input.provider } : {}),
       cwd: input.cwd,
       createdAt: now,
       updatedAt: now,
@@ -94,7 +98,7 @@ export class SessionStore {
   }
 
   async rewriteMessages(id: string, messages: Message[]): Promise<void> {
-    await writeJsonl(this.messagesPath(id), messages);
+    await writeJsonlAtomic(this.messagesPath(id), messages);
   }
 
   async delete(id: string): Promise<void> {

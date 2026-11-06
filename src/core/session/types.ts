@@ -12,6 +12,27 @@ export interface ReasoningPart {
   text: string;
 }
 
+export interface QueuedInput {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
+/** User steering injected at a safe model/tool boundary inside an agent run. */
+export interface SteeringPart extends QueuedInput {
+  type: "steering";
+}
+
+export interface GoalReviewPart {
+  type: "goal_review";
+  id: string;
+  goal: string;
+  verdict: "continue" | "work_done";
+  text: string;
+  tool: "continue_work" | "work_done";
+  createdAt: number;
+}
+
 export type ToolStatus = "pending" | "running" | "completed" | "error" | "denied";
 
 export interface ToolPart {
@@ -34,7 +55,7 @@ export interface ToolPart {
   endedAt?: number;
 }
 
-export type Part = TextPart | ReasoningPart | ToolPart;
+export type Part = TextPart | ReasoningPart | SteeringPart | GoalReviewPart | ToolPart;
 
 export interface Message {
   id: string;
@@ -52,6 +73,8 @@ export interface SessionMeta {
   id: string;
   title: string;
   model: string;
+  /** Missing on pre-engine sessions, which are always Ollama sessions. */
+  provider?: string;
   cwd: string;
   createdAt: number;
   updatedAt: number;
@@ -59,12 +82,16 @@ export interface SessionMeta {
   compaction?: SessionCompaction;
   thinking?: string;
   numCtx?: number;
-  lastContext?: { inputTokens: number; generatedTokens: number; estimatedTokens: number; at: number };
+  lastContext?: { inputTokens: number; generatedTokens: number; estimatedTokens: number; outputLimit?: number; stopReason?: string; at: number };
+  queuedInputs?: QueuedInput[];
+  goal?: { id: string; text: string; createdAt: number; continuations: number };
 }
 
 export interface SessionCompaction {
   summary: string;
   throughMessageId: string;
+  /** Exclusive original part count for a partially compacted assistant turn. */
+  throughPartCount?: number;
   throughCreatedAt: number;
   sourceMessageCount: number;
   updatedAt: number;

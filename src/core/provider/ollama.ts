@@ -1,7 +1,7 @@
 import { isAbortError, isTimeoutError } from "../../util/errors.js";
 import { sanitizeText } from "../../util/text.js";
 import type { Usage } from "../types.js";
-import type { ChatOptions, ChatStreamEvent, HealthResult, ModelDetails, ModelInfo, Provider } from "./types.js";
+import type { ChatOptions, ChatStreamEvent, HealthResult, LoadModelOptions, ModelDetails, ModelInfo, Provider, RunningModelInfo } from "./types.js";
 import { parseModelDetails, qwenNonThinkingPrompt } from "./model-details.js";
 
 export interface OllamaConfig {
@@ -35,6 +35,10 @@ interface OllamaChunk {
   prompt_eval_count?: number;
   eval_count?: number;
   eval_duration?: number;
+}
+
+interface OllamaProcessesResponse {
+  models?: Array<{ name?: string; model?: string; size?: number; size_vram?: number; context_length?: number }>;
 }
 
 interface ParsedChunk {
@@ -115,7 +119,8 @@ async function describeHttpError(response: Response): Promise<string> {
 }
 
 /**
- * Ollama provider. Only /api/tags, /api/version and /api/chat are used.
+ * Ollama provider. Model setup also uses empty /api/generate and /api/ps;
+ * neither endpoint generates text or changes persistent server settings.
  * Streaming is newline-delimited JSON; reasoning-capable models expose their
  * thoughts in message.thinking, which we surface as a separate stream event.
  */
@@ -219,6 +224,74 @@ export class OllamaProvider implements Provider {
     return details;
   }
 
+  private async runningModels(signal?: AbortSignal): Promise<RunningModelInfo[]> {
+    const response = await fetch(`${this.baseUrl}/api/ps`, {
+      headers: this.headers(),
+      signal: this.requestSignal(signal, Math.min(this.config.timeoutMs, 10_000)),
+    });
+    if (!response.ok) throw new Error(await describeHttpError(response));
+    const data = await response.json() as OllamaProcessesResponse;
+    return (data.models ?? []).flatMap((item) => {
+      const id = item.name ?? item.model;
+      return id && typeof item.size === "number" && typeof item.size_vram === "number" && typeof item.context_length === "number"
+        ? [{ id, sizeBytes: item.size, sizeVramBytes: item.size_vram, contextLength: item.context_length }]
+        : [];
+    });
+  }
+
+  async getRunningModel(model: string, signal?: AbortSignal): Promise<RunningModelInfo | null> {
+    const normalize = (id: string): string => {
+      const suffix = id.split("/").at(-1) ?? id;
+      return `${id}${suffix.includes(":") ? "" : ":latest"}`.toLowerCase();
+    };
+    return (await this.runningModels(signal)).find((item) => normalize(item.id) === normalize(model)) ?? null;
+  }
+
+  async loadModel(options: LoadModelOptions): Promise<RunningModelInfo | null> {
+    if (!Number.isInteger(options.numCtx) || options.numCtx < 256) throw new Error("Model loading requires a valid explicit context size.");
+    const response = await fetch(`${this.baseUrl}/api/generate`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        model: options.model,
+        prompt: "",
+        stream: false,
+        shift: false,
+        truncate: false,
+        ...(options.keepAlive ? { keep_alive: options.keepAlive } : {}),
+        options: { ...options.runnerOptions, num_ctx: options.numCtx },
+      }),
+      signal: this.requestSignal(options.signal, this.config.timeoutMs),
+    });
+    if (!response.ok) throw new Error(await describeHttpError(response));
+    await response.json();
+    return this.getRunningModel(options.model, options.signal);
+  }
+
+  /** Expire only this model, then wait until the scheduler removes its runner. */
+  async unloadModel(model: string, signal?: AbortSignal): Promise<RunningModelInfo | null> {
+    const before = await this.getRunningModel(model, signal);
+    if (!before) return null;
+    const response = await fetch(`${this.baseUrl}/api/generate`, {
+      method: "POST", headers: this.headers(),
+      body: JSON.stringify({ model, prompt: "", stream: false, keep_alive: 0 }),
+      signal: this.requestSignal(signal, 15_000),
+    });
+    if (!response.ok) throw new Error(await describeHttpError(response));
+    await response.json();
+    const deadline = Date.now() + 15_000;
+    while (await this.getRunningModel(model, signal)) {
+      if (Date.now() >= deadline) throw new Error("Ollama did not release the selected runner; it may still be in use.");
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => { clearTimeout(timer); reject(new Error("Runner release cancelled.")); };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, 250);
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+    return before;
+  }
+
   async *chat(options: ChatOptions): AsyncIterable<ChatStreamEvent> {
     const details = this.detailsCache.get(options.model);
     const rawOff = options.think === false && details?.thinking.control === "prompt";
@@ -231,7 +304,13 @@ export class OllamaProvider implements Provider {
       model: options.model,
       messages: options.messages,
       stream: true,
+      truncate: false,
+      shift: false,
     };
+    if (rawOff) {
+      body.truncate = false;
+      body.shift = false;
+    }
     if (options.think !== undefined && details?.thinking.control !== "none") body.think = options.think;
     if (options.keepAlive) body.keep_alive = options.keepAlive;
     if (options.options && Object.keys(options.options).length > 0) body.options = options.options;

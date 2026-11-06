@@ -16,7 +16,7 @@ export const fetchUrlTool: Tool = {
       required: ["url"],
       additionalProperties: false,
     },
-    safe: false,
+    safe: true,
     summary: (input) => (typeof input.url === "string" ? input.url : "(url)"),
   },
   async run(input, context): Promise<ToolResult> {

@@ -4,6 +4,8 @@ export interface Palette {
   accent: string;
   accentDim: string;
   text: string;
+  /** Monochrome wordmark; white on dark, charcoal on light. */
+  logo: string;
   muted: string;
   faint: string;
   border: string;
@@ -24,6 +26,7 @@ const dark: Palette = {
   accent: "#7dd3fc",
   accentDim: "#38bdf8",
   text: "#e4e4e7",
+  logo: "#ffffff",
   muted: "#a1a1aa",
   faint: "#71717a",
   border: "#3f3f46",
@@ -44,6 +47,7 @@ const light: Palette = {
   accent: "#0369a1",
   accentDim: "#0284c7",
   text: "#18181b",
+  logo: "#181818",
   muted: "#52525b",
   faint: "#a1a1aa",
   border: "#d4d4d8",

@@ -40,6 +40,20 @@ export function sessionToMarkdown(session: Session): string {
         lines.push("<details>", "<summary>Thinking</summary>", "", part.text.trim(), "", "</details>", "");
       } else if (part.type === "text" && part.text.trim()) {
         lines.push(part.text.trim(), "");
+      } else if (part.type === "steering" && part.text.trim()) {
+        lines.push(`### Queued user message`, "", part.text.trim(), "");
+      } else if (part.type === "goal_review") {
+        lines.push(
+          "<details>",
+          `<summary>Goal · ${part.verdict === "work_done" ? "work done" : "continue"}</summary>`,
+          "",
+          part.text.trim(),
+          "",
+          `Tool: \`${part.tool}\``,
+          "",
+          "</details>",
+          "",
+        );
       } else if (part.type === "tool") {
         lines.push(`### Tool · ${part.tool}`, "");
         lines.push(`Status: **${part.status}**${part.title ? ` · ${part.title}` : ""}`, "");

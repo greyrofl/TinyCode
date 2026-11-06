@@ -122,7 +122,7 @@ export const editFileTool: Tool = {
       required: ["path", "oldText", "newText"],
       additionalProperties: false,
     },
-    safe: false,
+    safe: true,
     summary: (input) => (typeof input.path === "string" ? input.path : "(file)"),
     example: {
       path: "src/file.js",
@@ -230,7 +230,7 @@ export const movePathTool: Tool = {
       required: ["source", "destination"],
       additionalProperties: false,
     },
-    safe: false,
+    safe: true,
     summary: (input) => `${String(input.source ?? "?")} → ${String(input.destination ?? "?")}`,
   },
   async run(input, context): Promise<ToolResult> {
@@ -257,7 +257,7 @@ export const copyPathTool: Tool = {
       required: ["source", "destination"],
       additionalProperties: false,
     },
-    safe: false,
+    safe: true,
     summary: (input) => `${String(input.source ?? "?")} → ${String(input.destination ?? "?")}`,
   },
   async run(input, context): Promise<ToolResult> {
@@ -284,7 +284,7 @@ export const deleteDirectoryTool: Tool = {
       required: ["path"],
       additionalProperties: false,
     },
-    safe: false,
+    safe: true,
     summary: (input) => (typeof input.path === "string" ? input.path : "(directory)"),
   },
   async run(input, context): Promise<ToolResult> {

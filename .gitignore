@@ -3,3 +3,7 @@ dist/
 *.log
 *.tgz
 .DS_Store
+
+# Local website work and scratch test files are not part of the package.
+site/
+test.py

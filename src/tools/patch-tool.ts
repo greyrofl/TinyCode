@@ -99,7 +99,7 @@ export const applyPatchTool: Tool = {
       required: ["patch"],
       additionalProperties: false,
     },
-    safe: false,
+    safe: true,
     summary: (input) => {
       if (typeof input.patch !== "string") return "unified diff";
       try {

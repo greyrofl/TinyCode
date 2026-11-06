@@ -2,11 +2,68 @@ import { configFile } from "../../util/paths.js";
 import { pathExists, readJson, writeJsonAtomic } from "../../util/fs.js";
 
 export type ThemeName = "dark" | "light";
+export type ProviderId = string;
+
+export interface OpenAICompatibleModelConfig {
+  name: string;
+  contextLength: number;
+  parameterSize?: string;
+  quantization?: string;
+  family?: string;
+  thinking: false | {
+    modes: string[];
+    defaultMode: string;
+    field: "reasoning_effort" | "think" | "none";
+    values: Record<string, boolean | string>;
+  };
+}
+
+export interface OpenAICompatibleProviderConfig {
+  type: "openai-compatible";
+  name: string;
+  baseUrl: string;
+  apiKeyEnv: string | null;
+  headers: Record<string, string>;
+  timeoutMs: number;
+  extraBody: Record<string, unknown>;
+  models: Record<string, OpenAICompatibleModelConfig>;
+}
 
 export interface Config {
-  /** Default model id as understood by Ollama, e.g. "qwen2.5-coder:7b". */
+  provider: ProviderId;
+  /** Model id/path for the selected engine. Empty until a local GGUF is chosen. */
   model: string;
+  providerModels: Record<string, string>;
+  /** User-declared external APIs; model limits/capabilities are never guessed. */
+  providers: Record<string, OpenAICompatibleProviderConfig>;
   models: Record<string, { thinking: string; numCtx: number; sampling?: SamplingConfig }>;
+  llama: {
+    executable: string | null;
+    autoInstall: boolean;
+    /** Official release tag, or latest (stable release's matching binary build). */
+    release: string;
+    backend: "auto" | "cuda" | "vulkan" | "cpu" | "metal";
+    baseUrl: string;
+    timeoutMs: number;
+    startupTimeoutMs: number;
+    modelDirs: string[];
+    /** Aliases mapped to existing local GGUF files. */
+    models: Record<string, string>;
+    headers: Record<string, string>;
+    extraOptions: Record<string, unknown>;
+    gpuLayers: number | "auto";
+    cpuMoe: boolean;
+    kvOffload: boolean;
+    loadMode: "auto" | "none" | "mmap" | "mlock" | "mmap+mlock" | "dio";
+    fitTargetMiB: number;
+    flashAttention: "auto" | "on" | "off";
+    cacheTypeK: string;
+    cacheTypeV: string;
+    batchSize: number;
+    microBatchSize: number;
+    threads: number;
+    parallel: number;
+  };
   ollama: {
     /** Overall request timeout. Loading a model can take a while on first use. */
     baseUrl: string;
@@ -32,15 +89,15 @@ export interface Config {
     samplingProfile: "auto" | "model" | "qwen3-thinking" | "qwen3-fast" | "custom";
   };
   context: {
-    /** Keep at most this many messages in the prompt. */
+    /** Legacy field retained for config compatibility; ignored by the agent. */
     maxMessages: number;
-    /** Keep at most this many characters from the newest messages. */
+    /** Legacy field retained for config compatibility; ignored by the agent. */
     maxChars: number;
   };
   tools: {
     /** Enable the agent loop, system prompt and tool calls. */
     enabled: boolean;
-    /** Skip approval for file writes, deletes and commands. */
+    /** Skip command approval and explicit MCP server approval restrictions. */
     autoApprove: boolean;
     /** Maximum model turns in one user request. */
     maxIterations: number;
@@ -50,6 +107,8 @@ export interface Config {
     promptFile: string | null;
     maxStalledSteps: number;
     profile: "auto" | "plan" | "edit" | "full";
+    /** Resolve the default auto/full profile from model size unless manually pinned. */
+    profileByModel: boolean;
     stopAfterToolCall: boolean;
   };
   compaction: {
@@ -66,6 +125,14 @@ export interface Config {
     numPredict: number;
     /** Optional custom compaction system prompt. */
     promptFile: string | null;
+  };
+  goal: {
+    enabled: boolean;
+    /** Optional evaluator overrides are activated when provider routing supports them. */
+    provider: string | null;
+    model: string | null;
+    numPredict: number;
+    maxContinuations: number;
   };
   ui: {
     theme: ThemeName;
@@ -85,6 +152,7 @@ export interface Config {
       args: string[];
       env: Record<string, string>;
       cwd?: string;
+      /** Auto-approve calls by default; false explicitly requires approval. */
       safe: boolean;
     }>;
   };
@@ -102,8 +170,20 @@ export interface SamplingConfig {
 
 export function defaultConfig(): Config {
   return {
-    model: "qwen2.5-coder:7b",
+    provider: "llama.cpp",
+    model: "",
+    providerModels: { "llama.cpp": "", ollama: "qwen2.5-coder:7b" },
+    providers: {},
     models: {},
+    llama: {
+      executable: null, autoInstall: true, release: "latest", backend: "auto",
+      baseUrl: "http://127.0.0.1:8081", timeoutMs: 600_000, startupTimeoutMs: 120_000,
+      modelDirs: [], models: {}, headers: {}, extraOptions: {},
+      gpuLayers: "auto", cpuMoe: false, kvOffload: true,
+      loadMode: process.platform === "win32" ? "none" : "auto", fitTargetMiB: 512,
+      flashAttention: "auto", cacheTypeK: "f16", cacheTypeV: "f16",
+      batchSize: 256, microBatchSize: 256, threads: 0, parallel: 1,
+    },
     ollama: {
       baseUrl: "http://127.0.0.1:11434",
       timeoutMs: 600_000,
@@ -126,8 +206,8 @@ export function defaultConfig(): Config {
       samplingProfile: "auto",
     },
     context: {
-      maxMessages: 24,
-      maxChars: 24_000,
+      maxMessages: 0,
+      maxChars: 0,
     },
     tools: {
       enabled: true,
@@ -138,6 +218,7 @@ export function defaultConfig(): Config {
       promptFile: null,
       maxStalledSteps: 3,
       profile: "auto",
+      profileByModel: true,
       stopAfterToolCall: false,
     },
     compaction: {
@@ -150,6 +231,7 @@ export function defaultConfig(): Config {
       numPredict: 1_024,
       promptFile: null,
     },
+    goal: { enabled: true, provider: null, model: null, numPredict: 512, maxContinuations: 3 },
     ui: {
       theme: "dark",
       showReasoning: true,
@@ -195,7 +277,92 @@ export function mergeConfig(raw: unknown): Config {
   const config = defaultConfig();
   if (!isObject(raw)) return config;
 
-  if (typeof raw.model === "string" && raw.model.trim()) config.model = raw.model.trim();
+  // Existing installations keep their Ollama model ids and sessions intact.
+  if (typeof raw.provider === "string" && raw.provider.trim()) config.provider = raw.provider.trim();
+  else if (raw.model !== undefined || raw.ollama !== undefined) config.provider = "ollama";
+  if (isObject(raw.providerModels)) {
+    for (const [id, value] of Object.entries(raw.providerModels)) if (typeof value === "string") config.providerModels[id] = value.trim();
+  }
+  const explicitModel = typeof raw.model === "string" ? raw.model.trim() : "";
+  config.model = explicitModel || config.providerModels[config.provider] || "";
+  config.providerModels[config.provider] = config.model;
+
+  if (isObject(raw.providers)) {
+    for (const [id, value] of Object.entries(raw.providers)) {
+      if (["ollama", "llama.cpp"].includes(id) || !/^[A-Za-z0-9._-]+$/.test(id) || !isObject(value) || value.type !== "openai-compatible") continue;
+      const models: OpenAICompatibleProviderConfig["models"] = {};
+      if (isObject(value.models)) for (const [modelId, modelValue] of Object.entries(value.models)) {
+        if (!modelId.trim() || !isObject(modelValue)) continue;
+        const rawThinking = modelValue.thinking;
+        let thinking: OpenAICompatibleModelConfig["thinking"] = false;
+        if (rawThinking === true) {
+          thinking = { modes: ["off", "on"], defaultMode: "off", field: "reasoning_effort", values: { off: "none", on: "medium" } };
+        } else if (isObject(rawThinking)) {
+          const modes = readStringArray(rawThinking.modes, ["off"]);
+          const unique = [...new Set(modes.map((mode) => mode.trim()).filter(Boolean))];
+          const field = ["reasoning_effort", "think", "none"].includes(String(rawThinking.field)) ? rawThinking.field as "reasoning_effort" | "think" | "none" : "reasoning_effort";
+          const values = isObject(rawThinking.values)
+            ? Object.fromEntries(Object.entries(rawThinking.values).filter((entry): entry is [string, boolean | string] => typeof entry[1] === "boolean" || typeof entry[1] === "string")) : {};
+          const defaultMode = typeof rawThinking.defaultMode === "string" && unique.includes(rawThinking.defaultMode) ? rawThinking.defaultMode : unique[0] ?? "off";
+          thinking = { modes: unique.length ? unique : ["off"], defaultMode, field, values };
+        }
+        models[modelId] = {
+          name: readString(modelValue.name, modelId),
+          contextLength: Math.round(readNumber(modelValue.contextLength, config.generation.numCtx, 256)),
+          ...(typeof modelValue.parameterSize === "string" ? { parameterSize: modelValue.parameterSize } : {}),
+          ...(typeof modelValue.quantization === "string" ? { quantization: modelValue.quantization } : {}),
+          ...(typeof modelValue.family === "string" ? { family: modelValue.family } : {}),
+          thinking,
+        };
+      }
+      config.providers[id] = {
+        type: "openai-compatible",
+        name: readString(value.name, id),
+        baseUrl: normalizeBaseUrl(readString(value.baseUrl, "http://127.0.0.1:8000/v1")),
+        apiKeyEnv: typeof value.apiKeyEnv === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.apiKeyEnv) ? value.apiKeyEnv : null,
+        headers: isObject(value.headers) ? Object.fromEntries(Object.entries(value.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {},
+        timeoutMs: readNumber(value.timeoutMs, 600_000, 1_000),
+        extraBody: isObject(value.extraBody) ? { ...value.extraBody } : {},
+        models,
+      };
+      if (!config.providerModels[id]) config.providerModels[id] = Object.keys(models)[0] ?? "";
+    }
+  }
+
+  if (!["ollama", "llama.cpp"].includes(config.provider) && !config.providers[config.provider]) config.provider = "llama.cpp";
+  if (!config.providerModels[config.provider]) config.providerModels[config.provider] = Object.keys(config.providers[config.provider]?.models ?? {})[0] ?? "";
+  config.model = explicitModel || config.providerModels[config.provider] || "";
+  config.providerModels[config.provider] = config.model;
+
+  if (isObject(raw.llama)) {
+    const llama = raw.llama;
+    const legacyBatchDefaults = llama.microBatchSize === 128 && llama.loadMode === undefined && llama.fitTargetMiB === undefined;
+    config.llama.executable = typeof llama.executable === "string" && llama.executable.trim() ? llama.executable.trim() : null;
+    config.llama.autoInstall = readBoolean(llama.autoInstall, config.llama.autoInstall);
+    config.llama.release = readString(llama.release, config.llama.release);
+    if (["auto", "cuda", "vulkan", "cpu", "metal"].includes(String(llama.backend))) config.llama.backend = llama.backend as Config["llama"]["backend"];
+    config.llama.baseUrl = normalizeBaseUrl(readString(llama.baseUrl, config.llama.baseUrl));
+    config.llama.timeoutMs = readNumber(llama.timeoutMs, config.llama.timeoutMs, 1_000);
+    config.llama.startupTimeoutMs = readNumber(llama.startupTimeoutMs, config.llama.startupTimeoutMs, 1_000);
+    config.llama.modelDirs = readStringArray(llama.modelDirs, []);
+    for (const key of ["models", "headers"] as const) {
+      if (isObject(llama[key])) for (const [name, value] of Object.entries(llama[key])) if (typeof value === "string") config.llama[key][name] = value;
+    }
+    if (isObject(llama.extraOptions)) config.llama.extraOptions = { ...llama.extraOptions };
+    if (typeof llama.gpuLayers === "number" && Number.isFinite(llama.gpuLayers)) config.llama.gpuLayers = Math.max(0, Math.floor(llama.gpuLayers));
+    config.llama.cpuMoe = readBoolean(llama.cpuMoe, config.llama.cpuMoe);
+    config.llama.kvOffload = readBoolean(llama.kvOffload, config.llama.kvOffload);
+    if (["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"].includes(String(llama.loadMode))) config.llama.loadMode = llama.loadMode as Config["llama"]["loadMode"];
+    config.llama.fitTargetMiB = Math.min(16_384, Math.round(readNumber(llama.fitTargetMiB, config.llama.fitTargetMiB, 128)));
+    if (["auto", "on", "off"].includes(String(llama.flashAttention))) config.llama.flashAttention = llama.flashAttention as Config["llama"]["flashAttention"];
+    const cacheTypes = ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"];
+    for (const key of ["cacheTypeK", "cacheTypeV"] as const) if (cacheTypes.includes(String(llama[key]))) config.llama[key] = String(llama[key]);
+    for (const key of ["batchSize", "microBatchSize"] as const) config.llama[key] = Math.min(8192, Math.round(readNumber(llama[key], config.llama[key], 1)));
+    if (legacyBatchDefaults) config.llama.microBatchSize = 256;
+    config.llama.microBatchSize = Math.min(config.llama.batchSize, config.llama.microBatchSize);
+    config.llama.threads = Math.round(readNumber(llama.threads, config.llama.threads, 0));
+    config.llama.parallel = Math.min(16, Math.round(readNumber(llama.parallel, config.llama.parallel, 1)));
+  }
 
   if (isObject(raw.ollama)) {
     const ollama = raw.ollama;
@@ -243,8 +410,8 @@ export function mergeConfig(raw: unknown): Config {
   }
 
   if (isObject(raw.context)) {
-    config.context.maxMessages = readNumber(raw.context.maxMessages, config.context.maxMessages, 1);
-    config.context.maxChars = readNumber(raw.context.maxChars, config.context.maxChars, 256);
+    config.context.maxMessages = readNumber(raw.context.maxMessages, config.context.maxMessages, 0);
+    config.context.maxChars = readNumber(raw.context.maxChars, config.context.maxChars, 0);
   }
 
   if (isObject(raw.tools)) {
@@ -256,6 +423,7 @@ export function mergeConfig(raw: unknown): Config {
     config.tools.maxOutputChars = readNumber(tools.maxOutputChars, config.tools.maxOutputChars, 1_000);
     config.tools.maxStalledSteps = Math.round(readNumber(tools.maxStalledSteps, config.tools.maxStalledSteps, 1));
     if (["auto", "plan", "edit", "full"].includes(String(tools.profile))) config.tools.profile = tools.profile as Config["tools"]["profile"];
+    config.tools.profileByModel = readBoolean(tools.profileByModel, config.tools.profileByModel);
     config.tools.stopAfterToolCall = readBoolean(tools.stopAfterToolCall, config.tools.stopAfterToolCall);
     config.tools.promptFile =
       typeof tools.promptFile === "string" && tools.promptFile.trim()
@@ -297,6 +465,14 @@ export function mergeConfig(raw: unknown): Config {
         : config.compaction.promptFile;
   }
 
+  if (isObject(raw.goal)) {
+    config.goal.enabled = readBoolean(raw.goal.enabled, config.goal.enabled);
+    config.goal.provider = typeof raw.goal.provider === "string" && raw.goal.provider.trim() ? raw.goal.provider.trim() : null;
+    config.goal.model = typeof raw.goal.model === "string" && raw.goal.model.trim() ? raw.goal.model.trim() : null;
+    config.goal.numPredict = Math.round(readNumber(raw.goal.numPredict, config.goal.numPredict, 64));
+    config.goal.maxContinuations = Math.min(10, Math.round(readNumber(raw.goal.maxContinuations, config.goal.maxContinuations, 1)));
+  }
+
   if (isObject(raw.ui)) {
     if (raw.ui.theme === "dark" || raw.ui.theme === "light") config.ui.theme = raw.ui.theme;
     config.ui.showReasoning = readBoolean(raw.ui.showReasoning, config.ui.showReasoning);
@@ -319,7 +495,7 @@ export function mergeConfig(raw: unknown): Config {
           args: readStringArray(value.args, []),
           env: isObject(value.env) ? Object.fromEntries(Object.entries(value.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {},
           cwd: typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined,
-          safe: readBoolean(value.safe, false),
+          safe: readBoolean(value.safe, true),
         };
       }
     }
@@ -337,8 +513,17 @@ function parseSampling(value: unknown, fallback: SamplingConfig["profile"]): Sam
 }
 
 function applyEnvironment(config: Config): void {
+  const provider = process.env.TINYCODE_PROVIDER?.trim();
+  if (provider && (provider === "llama.cpp" || provider === "ollama" || config.providers[provider])) {
+    if (config.provider !== provider) config.model = config.providerModels[provider] ?? "";
+    config.provider = provider;
+  }
   const model = process.env.TINYCODE_MODEL?.trim();
   if (model) config.model = model;
+  const llamaUrl = process.env.TINYCODE_LLAMA_URL;
+  if (llamaUrl?.trim()) config.llama.baseUrl = normalizeBaseUrl(llamaUrl);
+  const executable = process.env.TINYCODE_LLAMA_EXECUTABLE?.trim();
+  if (executable) config.llama.executable = executable;
 
   // Ollama itself uses OLLAMA_HOST=127.0.0.1:11434 (without a scheme).
   const baseUrl = process.env.TINYCODE_OLLAMA_URL ?? process.env.OLLAMA_HOST;

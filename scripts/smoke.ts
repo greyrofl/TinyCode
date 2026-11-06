@@ -5,13 +5,14 @@
 import { renderMarkdown } from "../src/tui/markdown.js";
 import { Picker, renderPicker } from "../src/tui/picker.js";
 import { getPalette } from "../src/tui/theme.js";
+import { buildLogo, logoWidth } from "../src/tui/logo.js";
 import { Transcript } from "../src/tui/transcript.js";
-import { lineWidth } from "../src/tui/types.js";
+import { lineWidth, type Line } from "../src/tui/types.js";
 import { TinyCodeTui } from "../src/tui/app.js";
 import { Bus } from "../src/core/bus.js";
 import { ChatService } from "../src/core/chat.js";
 import { defaultConfig, type Config } from "../src/core/config/config.js";
-import { buildContext } from "../src/core/context.js";
+import { buildContext, ContextOverflowError } from "../src/core/context.js";
 import { activeMessages } from "../src/core/compaction.js";
 import { loadCompactionPrompt } from "../src/core/prompt/compact.js";
 import { loadSystemPrompt } from "../src/core/prompt/system.js";
@@ -50,6 +51,25 @@ function check(name, lines, width) {
 }
 
 const palette = getPalette("dark");
+for (const theme of ["dark", "light"] as const) {
+  const themePalette = getPalette(theme);
+  const logo = buildLogo(themePalette);
+  const compactLogo = buildLogo(themePalette, true);
+  const color = theme === "dark" ? "#ffffff" : "#181818";
+  if (logo.length !== 4 || logoWidth(logo) !== 47 || logo.some((line) => lineWidth(line) !== 47)) {
+    failures++;
+    console.error(`FAIL ${theme} pixel logo geometry`, logo);
+  }
+  if (logo.some((line) => line.length !== 1 || line[0]?.style?.fg !== color || !/^[ ▀▄█]+$/.test(line[0]?.text ?? ""))) {
+    failures++;
+    console.error(`FAIL ${theme} logo must be monochrome pixels`, logo);
+  }
+  if (compactLogo.length !== 1 || logoWidth(compactLogo) !== 8 || compactLogo[0]?.[0]?.text !== "TinyCode" || compactLogo[0]?.[0]?.style?.fg !== color) {
+    failures++;
+    console.error(`FAIL ${theme} compact monochrome logo`, compactLogo);
+  }
+}
+console.log("ok monochrome pixel logo / consistent cells / compact and light-theme contrast");
 const markdown = [
   "# Heading with a very long title that should wrap gracefully across the line",
   "",
@@ -139,6 +159,24 @@ for (const width of [40, 80, 120]) {
   }
 }
 
+const contextPicker = new Picker({
+  title: "Ollama context window",
+  message: "Max context: ≈65,536 tokens (memory estimate). Loaded: 8,192 · mixed. RAM ctx means model + context are not fully VRAM-resident.",
+  showFilter: false,
+  selected: "8192",
+  items: [
+    { value: "2048", label: "2,048 tokens", detail: "needs ≥4,096", disabled: true },
+    { value: "4096", label: "4,096 tokens", detail: "RAM ctx" },
+    { value: "8192", label: "8,192 tokens", detail: "RAM ctx · current" },
+    { value: "65536", label: "65,536 tokens", detail: "RAM ctx · estimated max" },
+    { value: "custom", label: "Custom size…", detail: "type /context <tokens>" },
+  ],
+});
+for (const width of [32, 40, 80]) {
+  const rendered = renderPicker(contextPicker, width, 20, palette);
+  check(`context-picker@${width}x20`, rendered.lines, width);
+}
+
 picker.filter = "llama";
 const filtered = picker.items;
 const pickerResult = picker.handleKey({ name: "enter" });
@@ -173,17 +211,21 @@ function renderTui(
   busy = false,
   welcome = false,
   approval: ToolApprovalRequest | null = null,
-): { frameWidths: number[]; cursor: unknown } {
+  profile: Config["tools"]["profile"] = "auto",
+): { frameWidths: number[]; cursor: unknown; footer: string } {
   const current = welcome ? { ...session, messages: [] } : session;
   const chat = {
     current,
     status: busy ? { state: "responding" } : { state: "idle" },
     busy,
     currentModel: session.meta.model,
+    currentProvider: "ollama",
+    engineName: "Ollama",
     toolsEnabled: true,
     toolCount: 28,
     toolDefinitions: createDefaultTools().definitions(),
     currentThinking: "off",
+    currentToolProfile: profile,
     contextLimit: 8192,
     contextUsage: { tokens: 2000, inputTokens: 1900, outputTokens: 100, maxTokens: 8192, percent: 24, estimated: true },
     contextPressure: 0.24,
@@ -197,13 +239,13 @@ function renderTui(
     cwd: session.meta.cwd,
     promptSource: "promt.md",
   });
-  let frame = [];
+  let frame: Line[] = [];
   let cursor = null;
   (tui as unknown as { terminal: { width: number; height: number } }).terminal = { width, height };
   (tui as unknown as { screen: unknown }).screen = {
     resize: () => {},
     clear: () => {},
-    render: (value: never, position: unknown) => {
+    render: (value: Line[], position: unknown) => {
       frame = value;
       cursor = position;
     },
@@ -212,7 +254,7 @@ function renderTui(
     (tui as unknown as { approval: unknown }).approval = { request: approval, finish: () => {} };
   }
   (tui as unknown as { render: () => void }).render();
-  return { frameWidths: (frame as never[]).map((line) => lineWidth(line)), cursor };
+  return { frameWidths: frame.map((line) => lineWidth(line)), cursor, footer: frame.at(-1)?.map((span) => span.text).join("") ?? "" };
 }
 
 for (const [width, height] of [
@@ -242,6 +284,19 @@ for (const [index, actual] of busyFrame.frameWidths.entries()) {
   }
 }
 console.log("ok busy tui");
+
+for (const profile of ["auto", "full", "plan", "edit"] as const) {
+  for (const width of [24, 32, 40, 80, 120]) {
+    for (const busy of [false, true]) {
+      const result = renderTui(width, 24, busy, false, null, profile);
+      if (!result.footer.includes(`24% · ${profile}`) || result.frameWidths.at(-1)! > width) {
+        failures++;
+        console.error(`FAIL profile footer@${width} (${profile}, busy=${busy})`, result.footer);
+      }
+    }
+  }
+}
+console.log("ok tool profile beside context percentage / narrow and busy footer");
 
 for (const [width, height] of [
   [40, 20],
@@ -333,7 +388,7 @@ if (editor.text !== "two") {
 }
 console.log("ok editor");
 
-// Context builder: skip failed/aborted turns, respect budget, start with user.
+// Context builder: preserve chat, including failed/aborted work and its status.
 const history: Message[] = [
   { id: "c1", role: "user", createdAt: 1, parts: [{ type: "text", text: "first" }] },
   { id: "c2", role: "assistant", createdAt: 2, parts: [{ type: "text", text: "ok" }] },
@@ -344,7 +399,7 @@ const history: Message[] = [
 ];
 const context = buildContext(history, { maxMessages: 10, maxChars: 10_000 });
 const contextText = context.map((message) => `${message.role}:${message.content}`).join("|");
-if (contextText !== "user:first|assistant:ok|user:second\n\nthird") {
+if (contextText !== "user:first|assistant:ok|user:second|assistant:failed\n[Previous turn error: boom]|user:third|assistant:partial\n[Previous turn was aborted; unfinished actions are not completed.]") {
   failures++;
   console.error("FAIL context", contextText);
 }
@@ -448,26 +503,24 @@ const longTool: ToolPart = {
   status: "completed",
   output: "x".repeat(20_000),
 };
-const trimmedContext = buildContext(
-  [
-    { id: "tu", role: "user", createdAt: 1, parts: [{ type: "text", text: "inspect large.txt" }] },
-    { id: "ta", role: "assistant", createdAt: 2, parts: [longTool] },
-  ],
-  { maxMessages: 10, maxChars: 1_000 },
-  "SYSTEM",
-);
-const trimmedChars = trimmedContext
-  .filter((message) => message.role !== "system")
-  .reduce((sum, message) => sum + message.content.length, 0);
-if (
-  trimmedChars > 1_000 ||
-  !trimmedContext.some((message) => message.content.includes("inspect large.txt")) ||
-  !trimmedContext.some((message) => message.content.includes("context entry truncated"))
-) {
+let overflowRefused = false;
+try {
+  buildContext(
+    [
+      { id: "tu", role: "user", createdAt: 1, parts: [{ type: "text", text: "inspect large.txt" }] },
+      { id: "ta", role: "assistant", createdAt: 2, parts: [longTool] },
+    ],
+    { maxMessages: 10, maxChars: 1_000 },
+    "SYSTEM",
+  );
+} catch (error) {
+  overflowRefused = error instanceof ContextOverflowError && error.message.includes("No messages were discarded");
+}
+if (!overflowRefused || longTool.output?.length !== 20_000) {
   failures++;
-  console.error("FAIL context trimming", { trimmedChars, trimmedContext });
+  console.error("FAIL context overflow must refuse, not truncate", { overflowRefused });
 } else {
-  console.log("ok context trimming");
+  console.log("ok context overflow / no silent truncation");
 }
 
 class ScriptedProvider implements Provider {
@@ -504,7 +557,7 @@ class ScriptedProvider implements Provider {
   }
 }
 
-// Full ChatService agent loop: model call -> approval -> tool -> observation -> final turn.
+// ChatService agent loop: automatic file tools -> observation -> final turn.
 const agentTemp = await mkdtemp(path.join(os.tmpdir(), "tinycode-agent-"));
 try {
   await (await import("node:fs/promises")).writeFile(path.join(agentTemp, "agent.txt"), "old\n", "utf8");
@@ -522,9 +575,9 @@ try {
     systemPrompt: "System cwd={{CWD}}",
   });
   let approvals = 0;
-  chat.setApprovalHandler(async (request) => {
+  chat.setApprovalHandler(async () => {
     approvals++;
-    return request.tool === "replace_file";
+    return false;
   });
   await chat.initialize({ model: "scripted", cwd: agentTemp });
   await chat.send("replace agent.txt");
@@ -545,7 +598,7 @@ try {
 
   if (
     result !== "new\n" ||
-    approvals !== 1 ||
+    approvals !== 0 ||
     tool?.status !== "completed" ||
     !finalText.includes("Done after verification") ||
     !sawObservation ||

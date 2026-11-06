@@ -7,7 +7,10 @@ import type { Config } from "../core/config/config.js";
 import { saveConfig } from "../core/config/config.js";
 import { sessionToMarkdown } from "../core/session/export.js";
 import type { ChatStatus } from "../core/types.js";
-import type { OllamaRuntime, ParallelStatus } from "../core/ollama-runtime.js";
+import type { ParallelStatus, HardwareMemoryStatus, LocalRuntime } from "../core/runtime.js";
+import { calculateContextCapacity, contextCapacityMessage, contextChoices, type ContextCapacity } from "../core/context-memory.js";
+import { recommendModels, type ModelRecommendation } from "../core/model-recommendations.js";
+import type { RunningModelInfo } from "../core/provider/types.js";
 import { padEndWidth, truncateWidth } from "../util/ansi.js";
 import { errorMessage } from "../util/errors.js";
 import { readJson, writeJsonAtomic } from "../util/fs.js";
@@ -40,26 +43,30 @@ export interface TuiOptions {
   promptSource?: string;
   compactionPromptSource?: string;
   onModelChange?: (model: string) => Promise<void> | void;
-  runtime?: OllamaRuntime;
+  runtime?: LocalRuntime;
   startupNotices?: Array<{ text: string; level: "info" | "warn" | "error" }>;
 }
 
-type PickerKind = "model" | "session" | "thinking" | "context" | "parallel";
+type PickerKind = "provider" | "model" | "recommendation" | "session" | "thinking" | "context" | "parallel";
 
 const COMMANDS: Array<{ name: string; description: string }> = [
   { name: "help", description: "show commands and keys" },
   { name: "model", description: "select or set a model" },
+  { name: "models", description: "models grouped by engine" },
+  { name: "provider", description: "choose llama.cpp or Ollama" },
+  { name: "recommend", description: "models estimated to fit this hardware" },
   { name: "new", description: "start a new session" },
   { name: "sessions", description: "switch session" },
   { name: "retry", description: "regenerate the last answer" },
+  { name: "goal", description: "set task completion goal" },
   { name: "compact", description: "compress older session turns" },
   { name: "memory", description: "show compacted session memory" },
   { name: "tools", description: "show available agent tools" },
   { name: "reasoning", description: "toggle thinking output" },
   { name: "think", description: "choose the model's thinking mode" },
-  { name: "context", description: "set Ollama's context window" },
-  { name: "parallel", description: "check/set local Ollama parallel" },
-  { name: "profile", description: "tools: auto, plan, edit, or full" },
+  { name: "context", description: "set the engine's context window" },
+  { name: "parallel", description: "check/set local engine parallel" },
+  { name: "profile", description: "tools: auto, plan, edit, full; model restores default" },
   { name: "clear", description: "clear the screen" },
   { name: "export", description: "save the session as Markdown" },
   { name: "info", description: "show session details" },
@@ -85,8 +92,16 @@ export class TinyCodeTui {
   private picker: Picker | null = null;
   private pickerKind: PickerKind | null = null;
   private pickerHits: Array<{ row: number; left: number; right: number; index: number }> = [];
-  private modelSetup = false;
   private parallel: ParallelStatus | null = null;
+  private contextCapacity: ContextCapacity | null = null;
+  private runningSnapshot: RunningModelInfo | null = null;
+  private contextReadyModel: string | null = null;
+  private changingContext = false;
+  private contextChange: Promise<void> | null = null;
+  private contextRestartController: AbortController | null = null;
+  private runnerRecoveryRequired = false;
+  private readonly recommendations = new Map<string, ModelRecommendation>();
+  private contextSelection: { finish(value: number | null, error?: unknown): void; signal: AbortSignal } | null = null;
   private sessionId: string | null = null;
   private approval: { request: ToolApprovalRequest; finish: (allow: boolean) => void } | null = null;
   private approveAll = false;
@@ -94,6 +109,8 @@ export class TinyCodeTui {
   private scroll = 0;
   private viewportHeight = 1;
   private lastTotalLines = 0;
+  private transcriptStart = 0;
+  private transcriptAreaTop = 0;
 
   private spinner = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
@@ -133,10 +150,6 @@ export class TinyCodeTui {
       process.once("SIGHUP", this.signalHandler);
 
       this.render();
-      void this.checkParallel().catch((error) => {
-        this.transcript.notice(`Parallel check: ${errorMessage(error)}`, "warn");
-        this.scheduleRender();
-      });
       await new Promise<void>((resolve) => {
         this.resolveExit = resolve;
       });
@@ -152,7 +165,13 @@ export class TinyCodeTui {
       bus.on("message.started", () => this.scheduleRender()),
       bus.on("message.delta", () => this.scheduleRender()),
       bus.on("message.updated", () => this.scheduleRender()),
-      bus.on("message.ended", () => this.scheduleRender()),
+      bus.on("message.ended", ({ message }) => {
+        if (/out.of.memory|CUDA|server startup|TerminateProcess/i.test(message.error ?? "")) {
+          this.runnerRecoveryRequired = true;
+          this.contextReadyModel = null;
+        }
+        this.scheduleRender();
+      }),
       bus.on("session.changed", () => this.scheduleRender()),
       bus.on("status", (status) => {
         this.updateSpinner(status);
@@ -171,7 +190,8 @@ export class TinyCodeTui {
       status.state === "connecting" ||
       status.state === "thinking" ||
       status.state === "responding" ||
-      status.state === "tool";
+      status.state === "tool" ||
+      status.state === "evaluating";
     if (active && !this.spinnerTimer) {
       this.spinnerTimer = setInterval(() => {
         this.spinner++;
@@ -186,12 +206,13 @@ export class TinyCodeTui {
   private get generating(): boolean {
     const state = this.options.chat.status.state;
     return (
-      this.options.chat.busy ||
+      this.options.chat.busy || this.loadingText !== null || this.changingContext ||
       state === "connecting" ||
       state === "compacting" ||
       state === "thinking" ||
       state === "responding" ||
-      state === "tool"
+      state === "tool" ||
+      state === "evaluating"
     );
   }
 
@@ -220,7 +241,7 @@ export class TinyCodeTui {
         this.scroll = 0;
         this.lastTotalLines = 0;
       }
-      this.transcript.sync(session.messages);
+      this.transcript.sync(session.messages, session.meta.queuedInputs);
     }
 
     const headerHeight = height >= 16 ? 2 : 1;
@@ -251,6 +272,8 @@ export class TinyCodeTui {
     this.scroll = Math.max(0, Math.min(this.scroll, maxScroll));
 
     const start = Math.max(0, total - areaHeight - this.scroll);
+    this.transcriptStart = start;
+    this.transcriptAreaTop = areaTop;
     const visible = transcriptLines.slice(start, start + areaHeight);
     for (let row = 0; row < areaHeight; row++) {
       frame[areaTop + row] = visible[row] ?? [];
@@ -295,12 +318,12 @@ export class TinyCodeTui {
       { text: ` ${version()}`, style: { fg: palette.faint } },
     ];
 
-    const model = sanitizeText((this.options.chat.currentModel ?? this.options.config.model).split("/").at(-1) ?? "");
+    const model = sanitizeText((this.options.chat.currentModel ?? this.options.config.model).split(/[\\/]/).at(-1) ?? "");
     const maxRight = Math.max(10, width - lineWidth(left) - 4);
     const right: Line = [
-      { text: "ollama", style: { fg: palette.faint } },
+      { text: this.options.chat.engineName, style: { fg: palette.faint } },
       { text: " · ", style: { fg: palette.faint } },
-      { text: truncateWidth(model, Math.max(4, maxRight - 9)), style: { fg: palette.muted } },
+      { text: truncateWidth(model || "select model", Math.max(4, maxRight - this.options.chat.engineName.length - 3)), style: { fg: palette.muted } },
     ];
 
     const session = this.options.chat.current;
@@ -333,9 +356,9 @@ export class TinyCodeTui {
     const palette = this.palette;
     const panelWidth = Math.max(28, Math.min(64, width - 4));
     const inside = panelWidth - 4;
-    const model = (this.options.chat.currentModel ?? this.options.config.model).split("/").at(-1) ?? "";
+    const model = (this.options.chat.currentModel ?? this.options.config.model).split(/[\\/]/).at(-1) ?? "";
     const fields: Array<{ label: string; value: string; hint: string }> = [
-      { label: "model", value: model, hint: "/model" },
+      { label: "model", value: model || "select a local model", hint: "/models" },
       { label: "thinking", value: this.options.chat.currentThinking, hint: "/think" },
       { label: "context", value: `${this.options.chat.contextLimit.toLocaleString("en-US")} tokens`, hint: "/context" },
       { label: "folder", value: shortPath(this.options.chat.current?.meta.cwd ?? this.options.cwd), hint: "" },
@@ -476,12 +499,17 @@ export class TinyCodeTui {
 
   private buildFooter(width: number): Line {
     const usage = this.options.chat.contextUsage;
-    const context: Line = [{
-      text: width < 34
-        ? `${usage.percent}% ${usage.estimated ? "~" : ""}${usage.tokens}/${usage.maxTokens}t`
-        : `ctx ${usage.percent}% · ${usage.estimated ? "~" : ""}${usage.tokens.toLocaleString("en-US")}/${usage.maxTokens.toLocaleString("en-US")} tok`,
-      style: { fg: usage.percent >= 90 ? this.palette.error : usage.percent >= 70 ? this.palette.warn : this.palette.accent },
-    }];
+    const contextStyle = { fg: usage.percent >= 90 ? this.palette.error : usage.percent >= 70 ? this.palette.warn : this.palette.accent };
+    const context: Line = [
+      { text: `${width < 34 ? "" : "ctx "}${usage.percent}%`, style: contextStyle },
+      { text: " · ", style: { fg: this.palette.faint } },
+      { text: this.options.chat.currentToolProfile, style: { fg: this.palette.accent, bold: true } },
+    ];
+    const tokens = width < 50
+      ? ` · ${usage.estimated ? "~" : ""}${usage.tokens}/${usage.maxTokens}t`
+      : ` · ${usage.estimated ? "~" : ""}${usage.tokens.toLocaleString("en-US")}/${usage.maxTokens.toLocaleString("en-US")} tok`;
+    // Keep the percentage and profile visible before optional token detail/hints.
+    if (lineWidth(context) + tokens.length <= width) context.push({ text: tokens, style: contextStyle });
     const status = fitLine(this.statusLine(), Math.max(0, Math.min(24, width - lineWidth(context) - 2)));
     const available = Math.max(0, width - lineWidth(status) - lineWidth(context) - 3);
     const hints = this.footerHints(available);
@@ -512,10 +540,17 @@ export class TinyCodeTui {
         { text: status.detail ?? "running tool", style: { fg: palette.muted } },
       ];
     }
+    if (status.state === "evaluating") {
+      const glyph = SPINNER[this.spinner % SPINNER.length]!;
+      return [
+        { text: `  ${glyph} `, style: { fg: palette.reasoning } },
+        { text: status.detail ?? "reviewing goal", style: { fg: palette.muted } },
+      ];
+    }
     if (status.state === "connecting" || status.state === "thinking" || status.state === "responding") {
       const glyph = SPINNER[this.spinner % SPINNER.length]!;
-      const label =
-        status.state === "connecting" ? "loading model" : status.state === "thinking" ? "thinking" : "writing";
+      const label = status.detail ??
+        (status.state === "connecting" ? "processing prompt" : status.state === "thinking" ? "thinking" : "generating response");
       const bits = [label];
       return [
         { text: `  ${glyph} `, style: { fg: palette.accent } },
@@ -578,6 +613,12 @@ export class TinyCodeTui {
         return;
       }
       this.handlePickerKey(key);
+      return;
+    }
+
+    if (key.name === "click") {
+      const line = this.transcriptStart + (key.y ?? -1) - this.transcriptAreaTop;
+      if (line >= 0 && this.transcript.toggleGoalAt(line)) this.scheduleRender();
       return;
     }
 
@@ -723,10 +764,12 @@ export class TinyCodeTui {
   }
 
   private handleCtrlC(): void {
+    if (this.contextRestartController) { this.contextRestartController.abort(); return; }
     if (this.generating) {
       this.options.chat.abort();
       return;
     }
+
     if (!this.editor.isEmpty) {
       this.editor.clear();
       this.scheduleRender();
@@ -775,6 +818,7 @@ export class TinyCodeTui {
   }
 
   private handleEscape(): void {
+    if (this.contextRestartController) { this.contextRestartController.abort(); return; }
     if (this.generating) {
       this.options.chat.abort();
       return;
@@ -804,12 +848,37 @@ export class TinyCodeTui {
       return;
     }
 
-    if (this.options.chat.busy) {
-      this.transcript.notice("Still generating — press Esc to abort.", "warn");
+    if (this.options.chat.canQueue) {
+      this.editor.pushHistory(text);
+      this.editor.clear();
+      this.scroll = 0;
+      this.lastTotalLines = 0;
+      this.scheduleRender();
+      void this.options.chat.send(text, (signal) => this.preparePromptContext(signal)).catch((error) => {
+        this.transcript.notice(errorMessage(error), "error");
+        this.scheduleRender();
+      });
+      return;
+    }
+
+    if (this.generating) {
+      this.transcript.notice(this.loadingText ? "Model/context setup is still running — press Esc to cancel." : "Still generating — press Esc to abort.", "warn");
       this.scheduleRender();
       return;
     }
 
+    if (!this.options.chat.currentModel) {
+      this.transcript.notice("Choose a model first; your message remains in the input.", "info");
+      void this.openModelPicker();
+      return;
+    }
+
+    if (this.options.chat.loadedRunnerContext !== null && this.options.chat.contextLimit < this.options.chat.minimumContextSize) {
+      this.transcript.notice(`The current context is too small for profile ${this.options.chat.currentToolProfile}. Choose at least ${this.options.chat.minimumContextSize.toLocaleString("en-US")} tokens.`, "warn");
+      void this.openContextPicker();
+      this.scheduleRender();
+      return;
+    }
     this.editor.pushHistory(text);
     this.editor.clear();
     this.scroll = 0;
@@ -817,7 +886,7 @@ export class TinyCodeTui {
     this.transcript.clearNotices();
     this.scheduleRender();
 
-    void this.options.chat.send(text).catch((error) => {
+    void this.options.chat.send(text, (signal) => this.preparePromptContext(signal)).catch((error) => {
       this.transcript.notice(errorMessage(error), "error");
       this.scheduleRender();
     });
@@ -838,6 +907,16 @@ export class TinyCodeTui {
           if (argument) await this.setModel(argument);
           else await this.openModelPicker();
           break;
+        case "models":
+          await this.openModelPicker();
+          break;
+        case "provider":
+          if (argument) await this.setProvider(argument);
+          else await this.openModelPicker();
+          break;
+        case "recommend":
+          await this.openRecommendationPicker();
+          break;
         case "new":
           await this.newSession();
           break;
@@ -845,7 +924,12 @@ export class TinyCodeTui {
           await this.openSessionPicker();
           break;
         case "retry":
-          await this.options.chat.retry();
+          await this.options.chat.retry((signal) => this.preparePromptContext(signal));
+          break;
+        case "goal":
+          if (!argument) this.transcript.notice("Usage: /goal <task description>. Use /goal off to clear it.", "info");
+          else if (argument.toLowerCase() === "off") await this.options.chat.clearGoal();
+          else await this.options.chat.setGoal(argument);
           break;
         case "compact":
           await this.compactSession();
@@ -866,14 +950,17 @@ export class TinyCodeTui {
           break;
         case "context":
         case "ctx":
-          if (argument) { await this.options.chat.setContextSize(Number(argument)); await this.saveModelPreference(); }
+          if (argument) {
+            await this.applyContextValue(Number(argument));
+          }
           else await this.openContextPicker();
           break;
         case "parallel":
           await this.openParallelPicker();
           break;
         case "profile":
-          await this.setToolProfile(argument || "auto");
+          if (argument) await this.setToolProfile(argument);
+          else this.transcript.notice(`Tool profile: ${this.options.chat.currentToolProfile}. Use /profile auto|plan|edit|full, or /profile model for the size-based default.`, "info");
           break;
         case "clear":
           this.transcript.clearView();
@@ -919,33 +1006,72 @@ export class TinyCodeTui {
   }
 
   private async setModel(model: string): Promise<void> {
+    if (this.changingContext) {
+      this.contextRestartController?.abort();
+      this.options.chat.abort();
+      await this.contextChange?.catch(() => {});
+    }
+    if (this.options.chat.currentProvider === "ollama") await this.options.runtime?.ensureStarted?.();
     await this.options.chat.setModel(model);
     await this.options.onModelChange?.(model);
+    this.contextCapacity = null;
+    this.runningSnapshot = null;
+    this.contextReadyModel = null;
+    this.runnerRecoveryRequired = false;
     this.transcript.notice(`Model set to ${model}.`, "info");
-    await this.openThinkingPicker(true);
+    await this.openThinkingPicker(false);
+  }
+
+  private async setProvider(id: string, openModels = true): Promise<void> {
+    if (this.changingContext) {
+      this.contextRestartController?.abort(); this.options.chat.abort();
+      await this.contextChange?.catch(() => {});
+    }
+    const previousProvider = this.options.chat.currentProvider;
+    const previousModel = this.options.chat.currentModel ?? "";
+    this.loadingText = `Switching to ${id}…`;
+    this.scheduleRender();
+    try {
+      await this.options.chat.setProvider(id);
+      this.options.persistedConfig.providerModels[previousProvider] = previousModel;
+      this.options.persistedConfig.provider = this.options.config.provider;
+      this.options.persistedConfig.model = this.options.chat.currentModel ?? "";
+      this.options.persistedConfig.providerModels[id] = this.options.chat.currentModel ?? "";
+      await this.persistConfig();
+      this.contextCapacity = null; this.runningSnapshot = null; this.contextReadyModel = null; this.parallel = null;
+      this.runnerRecoveryRequired = false;
+      this.transcript.notice(`Engine: ${this.options.chat.engineName}. Weights are loaded only after a prompt.`, "info");
+      if (openModels) await this.openModelPicker();
+    } finally {
+      this.loadingText = null;
+      this.scheduleRender();
+    }
   }
 
   private async saveModelPreference(): Promise<void> {
     const model = this.options.chat.currentModel;
     if (!model) return;
-    const sampling = this.options.config.models[model]?.sampling ?? this.options.persistedConfig.models[model]?.sampling;
+    const key = this.options.chat.modelPreferenceKey;
+    const sampling = this.options.config.models[key]?.sampling ?? this.options.persistedConfig.models[key]?.sampling;
     const preference = { thinking: this.options.chat.currentThinking, numCtx: this.options.chat.contextLimit, ...(sampling ? { sampling } : {}) };
-    this.options.config.models[model] = { ...preference };
-    this.options.persistedConfig.models[model] = { ...preference };
+    this.options.config.models[key] = { ...preference };
+    this.options.persistedConfig.models[key] = { ...preference };
     await this.persistConfig();
   }
 
   private async setToolProfile(profile: string): Promise<void> {
-    if (!["auto", "plan", "edit", "full"].includes(profile)) throw new Error("Profile must be auto, plan, edit, or full.");
-    this.options.config.tools.profile = profile as Config["tools"]["profile"];
-    this.options.persistedConfig.tools.profile = profile as Config["tools"]["profile"];
+    if (!["model", "auto", "plan", "edit", "full"].includes(profile)) throw new Error("Profile must be model, auto, plan, edit, or full.");
+    const selected = profile === "model" ? "auto" : profile as Config["tools"]["profile"];
+    this.options.config.tools.profile = selected;
+    this.options.persistedConfig.tools.profile = selected;
+    this.options.config.tools.profileByModel = profile === "model";
+    this.options.persistedConfig.tools.profileByModel = profile === "model";
     await this.persistConfig();
-    this.transcript.notice(`Tool profile: ${profile}. It applies to the next model step.`, "info");
+    this.transcript.notice(`Tool profile: ${this.options.chat.currentToolProfile}${profile === "model" ? " (model default)" : " (manual)"}. It applies to the next model step.`, "info");
   }
 
-  private async openThinkingPicker(setup = false): Promise<void> {
+  private async openThinkingPicker(_setup = false): Promise<void> {
     const details = await this.options.chat.getModelDetails();
-    this.modelSetup = setup;
     const items = details.thinking.modes.map((mode) => ({
       value: mode,
       label: mode === "off" ? "Off" : mode === "on" ? "On" : mode,
@@ -965,46 +1091,277 @@ export class TinyCodeTui {
     this.scheduleRender();
   }
 
-  private async openContextPicker(): Promise<void> {
+  private async openContextPicker(capacity = this.contextCapacity, setup = false): Promise<void> {
     const details = await this.options.chat.getModelDetails();
     const maximum = details.contextLength ?? 131_072;
-    const values = [...new Set([2048, 4096, 8192, 12288, 16384, 32768, 65536, maximum, this.options.chat.contextLimit])]
-      .filter((value) => value <= maximum).sort((a, b) => a - b);
+    const minimum = this.options.chat.minimumContextSize;
+    const estimatedMaximum = capacity?.maximum ?? maximum;
+    // llama.cpp can rebalance weight offload during a physical reload (`--fit`).
+    // Free memory after the small baseline is therefore guidance, not a hard
+    // ceiling. Ollama has scheduler allocation telemetry, so its estimate can
+    // remain enforced as before.
+    const advisoryEstimate = this.options.chat.currentProvider === "llama.cpp";
+    const selectableMaximum = advisoryEstimate ? maximum : estimatedMaximum;
+    const values = contextChoices(maximum, this.options.chat.contextLimit, selectableMaximum, minimum);
     this.picker = new Picker({
-      title: "Ollama context window",
-      items: [...values.map((value) => ({ value: String(value), label: `${value.toLocaleString("en-US")} tokens`, detail: value > 8192 ? "more KV-cache / VRAM" : "" })),
-        { value: "custom", label: "Custom size…", detail: "type /context <tokens>" }],
-      selected: String(this.options.chat.contextLimit),
+      title: `${this.options.chat.engineName} context window`,
+      items: [...values.map((value) => {
+        const details: string[] = [];
+        if (value < minimum) details.push(`needs ≥${minimum.toLocaleString("en-US")}`);
+        else if (capacity && value > capacity.maximum) details.push(advisoryEstimate ? "above estimate · verify on reload" : "above estimate");
+        if (capacity?.vramMaximum !== null && capacity?.vramMaximum !== undefined && value > capacity.vramMaximum) details.push("RAM ctx");
+        if (value === maximum) details.push("model limit");
+        else if (capacity && value === capacity.maximum) details.push(capacity.exact ? "estimated to model limit" : "estimated fit");
+        if (value === this.options.chat.contextLimit) details.push("current");
+        return {
+          value: String(value),
+          label: `${value.toLocaleString("en-US")} tokens`,
+          detail: details.join(" · "),
+          disabled: value < minimum || Boolean(!advisoryEstimate && capacity && value > capacity.maximum),
+        };
+      }),
+        ...(setup ? [] : [{ value: "custom", label: "Custom size…", detail: "type /context <tokens>" }])],
+      selected: String(this.options.chat.contextLimit <= selectableMaximum ? this.options.chat.contextLimit : selectableMaximum),
       showFilter: false,
-      message: "Applied as num_ctx on the next request. A larger context needs more memory and may reload the model.",
+      message: capacity
+        ? advisoryEstimate
+          ? `${contextCapacityMessage(capacity).replace(/^Max context:/, "Estimated fit:")} Model limit: ${maximum.toLocaleString("en-US")} tokens. Larger choices are allowed and verified during reload. Changed context requires a controlled llama.cpp restart.`
+          : `${contextCapacityMessage(capacity)} Changed context requires a controlled ${this.options.chat.engineName} restart.`
+        : `Model limit: ${maximum.toLocaleString("en-US")} tokens. Live memory estimate unavailable.`,
     });
     this.pickerKind = "context";
+    this.updateContextPickerFooter();
     this.scheduleRender();
   }
 
-  private async checkParallel(): Promise<void> {
+  private async preparePromptContext(signal: AbortSignal): Promise<void> {
+    const model = this.options.chat.currentModel ?? this.options.config.model;
+    if (!this.options.chat.managesRunner) {
+      this.loadingText = `Connecting to ${this.options.chat.engineName}…`;
+      this.scheduleRender();
+      try {
+        await this.options.runtime?.ensureStarted?.(signal);
+        await this.options.chat.getModelDetails();
+        this.contextReadyModel = model;
+      } finally {
+        this.loadingText = null;
+        this.scheduleRender();
+      }
+      return;
+    }
+    let running = await this.options.chat.getRunningModel(signal).catch((error) => {
+      if (signal.aborted) throw error;
+      return null; // A stopped Ollama daemon is started below, before retrying /api/ps.
+    });
+    if (running && !this.runnerRecoveryRequired && this.contextReadyModel === model && this.options.chat.loadedRunnerContext === this.options.chat.contextLimit &&
+      running.contextLength >= this.options.chat.contextLimit) return;
+    this.loadingText = running ? `Inspecting model ${model}…` : `Loading model ${model}…`;
+    this.transcript.notice(this.loadingText, "info");
+    this.scheduleRender();
+    try {
+      await this.options.runtime?.ensureStarted?.(signal);
+      if (!running) running = await this.options.chat.getRunningModel(signal);
+      const [details, hardware, parallel] = await Promise.all([
+        this.options.chat.getModelDetails(),
+        this.readMemoryStatus(),
+        this.options.runtime?.parallelStatus?.() ?? Promise.resolve({ value: null, source: "unavailable", local: false, canSet: false }),
+      ]);
+      if (signal.aborted || this.exiting) throw new Error("Model loading cancelled.");
+      this.parallel = parallel;
+      const loadContext = Math.min(details.contextLength ?? 8192, Math.max(2048, Math.min(this.options.chat.contextLimit, 8192)));
+      if (!running) {
+        this.options.chat.clearLoadedRunner();
+        running = await this.options.chat.loadCurrentModel(signal, loadContext);
+      } else if (this.options.chat.currentProvider === "llama.cpp" && this.options.chat.loadedRunnerContext === null) {
+        // Adopt an existing matching llama-server without changing its physical context.
+        running = await this.options.chat.loadCurrentModel(signal, running.contextLength);
+      }
+      if (!running) throw new Error(`${this.options.chat.engineName} loaded the model but did not report its runner allocation.`);
+      if (signal.aborted || this.exiting) throw new Error("Model loading cancelled.");
+      const afterLoad = await this.readMemoryStatus() ?? hardware;
+      const measured = calculateContextCapacity({
+        details,
+        running,
+        hardware: afterLoad,
+        parallel: parallel.value,
+        requestedContext: this.options.chat.loadedRunnerContext ?? running.contextLength,
+        forceCpu: this.options.chat.cpuOnly,
+      });
+      this.runningSnapshot = running;
+      this.contextCapacity = measured;
+      this.loadingText = null;
+      this.transcript.notice(`Model loaded: ${model} · context ${(this.options.chat.loadedRunnerContext ?? running.contextLength).toLocaleString("en-US")}.`, "info");
+      this.scheduleRender();
+      const selected = await this.choosePromptContext(this.contextCapacity, signal);
+      if (selected === null || signal.aborted) throw new Error("Context selection cancelled.");
+      this.contextReadyModel = model;
+    } finally {
+      this.loadingText = null;
+      this.scheduleRender();
+    }
+  }
+
+  private async choosePromptContext(capacity: ContextCapacity, signal: AbortSignal): Promise<number | null> {
+    if (signal.aborted) return null;
+    return new Promise<number | null>((resolve, reject) => {
+      let settled = false;
+      const finish = (value: number | null, error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        this.contextSelection = null;
+        if (error) reject(error); else resolve(value);
+      };
+      const onAbort = (): void => {
+        if (this.pickerKind === "context") { this.picker = null; this.pickerKind = null; }
+        // Applying a context must finish its rollback/daemon restoration before
+        // the original message is marked cancelled or another one can start.
+        if (!this.changingContext) finish(null);
+        this.scheduleRender();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.contextSelection = { finish, signal };
+      void this.openContextPicker(capacity, true).catch((error) => finish(null, error));
+    });
+  }
+
+  private updateContextPickerFooter(): void {
+    if (!this.picker || this.pickerKind !== "context") return;
+    const selected = Number(this.picker.items[this.picker.index]?.value);
+    const physical = this.options.chat.loadedRunnerContext ?? this.runningSnapshot?.contextLength;
+    const needsRestart = physical !== undefined && physical !== null && Number.isFinite(selected) &&
+      (selected !== physical || this.options.chat.loadedRunnerContext === null || this.runnerRecoveryRequired);
+    this.picker.options.footer = needsRestart
+      ? `${this.options.chat.engineName} restart required · enter apply · esc cancel`
+      : "enter select · esc close · ↑↓ move";
+  }
+
+  private async readMemoryStatus(): Promise<HardwareMemoryStatus | null> {
+    try { return await (this.options.runtime?.memoryStatus?.() ?? Promise.resolve(null)); }
+    catch { return null; }
+  }
+
+  private async resetRunnerMemory(signal?: AbortSignal): Promise<boolean> {
+    const before = await this.readMemoryStatus();
+    const existing = await this.options.chat.getRunningModel(signal) ?? this.runningSnapshot;
+    try {
+      const released = await this.options.chat.unloadCurrentModel(signal);
+      if (released) await this.options.runtime?.waitForMemoryRelease?.(before, released.sizeVramBytes, signal);
+      this.runningSnapshot = null;
+      return false;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (!this.options.runtime?.restartServer) throw error;
+      this.transcript.notice(`Runner release failed; restarting the verified local ${this.options.chat.engineName} server.`, "warn");
+      await this.options.runtime.restartServer(signal);
+      this.options.chat.clearLoadedRunner();
+      await this.options.runtime.waitForMemoryRelease(before, existing?.sizeVramBytes ?? 0, signal);
+      this.runningSnapshot = null;
+      return true;
+    }
+  }
+
+  private applyContextValue(tokens: number): Promise<void> {
+    if (this.contextChange) return Promise.reject(new Error("An engine context restart is already running."));
+    const task = this.performContextChange(tokens);
+    this.contextChange = task;
+    return task.finally(() => { if (this.contextChange === task) this.contextChange = null; });
+  }
+
+  private async performContextChange(tokens: number): Promise<void> {
+    if (this.changingContext) throw new Error("An engine context restart is already running.");
+    const selection = this.contextSelection;
+    const ownedController = selection ? null : new AbortController();
+    this.contextRestartController = ownedController;
+    const signal = selection?.signal ?? ownedController!.signal;
+    const previous = this.options.chat.contextLimit;
+    this.changingContext = true;
+    try {
+      await this.options.chat.setContextSize(tokens, { duringSetup: Boolean(selection) });
+      const current = await this.options.chat.getRunningModel(signal);
+      const reuse = current && !this.runnerRecoveryRequired && this.options.chat.loadedRunnerContext === tokens && current.contextLength >= tokens;
+      if (!reuse && (current || selection || this.options.chat.loadedRunnerInfo)) {
+        const model = this.options.chat.currentModel ?? this.options.config.model;
+        this.loadingText = current ? `Restarting ${this.options.chat.engineName} · ${model}…` : `Loading model ${model}…`;
+        this.transcript.notice(this.loadingText, "info");
+        this.scheduleRender();
+        let forced = current ? await this.resetRunnerMemory(signal) : false;
+        const beforeAllocation = await this.readMemoryStatus();
+        try {
+          const running = await this.options.chat.loadCurrentModel(signal, tokens);
+          if (!running) throw new Error("The new runner did not report its loaded context.");
+          this.runningSnapshot = running;
+        } catch (error) {
+          if (signal.aborted || forced || !/out.of.memory|CUDA|failed.*process|server startup/i.test(errorMessage(error)) || !this.options.runtime?.restartServer) throw error;
+          forced = true;
+          this.transcript.notice(`Restarting ${this.options.chat.engineName} server once after runner startup failure.`, "warn");
+          await this.options.runtime.restartServer(signal);
+          const baselineFree = beforeAllocation?.gpus.reduce((sum, gpu) => sum + gpu.freeBytes, 0);
+          await this.options.runtime.waitForMemoryRelease(beforeAllocation, 0, signal,
+            baselineFree === undefined ? undefined : Math.max(0, baselineFree - 256 * 1024 ** 2));
+          this.options.chat.clearLoadedRunner();
+          const running = await this.options.chat.loadCurrentModel(signal, tokens);
+          if (!running) throw new Error(`${this.options.chat.engineName} did not load the selected context after restart.`);
+          this.runningSnapshot = running;
+        }
+        this.transcript.notice(`${this.options.chat.engineName} ${forced ? "server restarted" : "runner ready"} · ${tokens.toLocaleString("en-US")} tokens.`, "info");
+      }
+      if (this.options.chat.loadedRunnerContext !== null && this.options.chat.loadedRunnerContext !== tokens) {
+        throw new Error(`${this.options.chat.engineName} reported ${this.options.chat.loadedRunnerContext.toLocaleString("en-US")} loaded tokens instead of ${tokens.toLocaleString("en-US")}. The selected context was not applied.`);
+      }
+      if (this.options.chat.loadedRunnerInfo) {
+        this.runningSnapshot = this.options.chat.loadedRunnerInfo;
+        this.contextCapacity = calculateContextCapacity({
+          details: await this.options.chat.getModelDetails(),
+          running: this.runningSnapshot,
+          hardware: await this.readMemoryStatus(),
+          parallel: this.parallel?.value,
+          requestedContext: tokens,
+          forceCpu: this.options.chat.cpuOnly,
+        });
+      }
+      if (signal.aborted) throw new Error("Engine context change cancelled.");
+      await this.saveModelPreference();
+      this.runnerRecoveryRequired = false;
+      if (this.options.chat.loadedRunnerContext === tokens) this.contextReadyModel = this.options.chat.currentModel;
+      selection?.finish(tokens);
+    } catch (error) {
+      this.contextReadyModel = null;
+      this.runnerRecoveryRequired = true;
+      try { await this.options.chat.setContextSize(previous, { duringSetup: Boolean(selection) }); } catch { /* Preserve the original error. */ }
+      selection?.finish(null, error);
+      throw error;
+    } finally {
+      this.changingContext = false;
+      if (this.contextRestartController === ownedController) this.contextRestartController = null;
+      this.loadingText = null;
+      this.scheduleRender();
+    }
+  }
+
+  private async checkParallel(openPicker = true): Promise<void> {
     if (!this.options.runtime) return;
     this.parallel = await this.options.runtime.parallelStatus();
     if (this.parallel.value !== null && this.parallel.value !== 1 && this.parallel.local) {
-      if (!this.picker && !this.approval && !this.generating) await this.openParallelPicker();
-      else this.transcript.notice(`Ollama parallel=${this.parallel.value}. Recommend 1 for a single agent; use /parallel.`, "warn");
+      if (openPicker && !this.picker && !this.approval && !this.generating) await this.openParallelPicker();
+      else this.transcript.notice(`${this.options.chat.engineName} parallel=${this.parallel.value}. Recommend 1 for a single agent; use /parallel.`, "warn");
     }
     this.scheduleRender();
   }
 
   private async openParallelPicker(): Promise<void> {
     if (!this.options.runtime) {
-      this.transcript.notice("Parallel configuration is available for local Ollama startup only.", "info");
+      this.transcript.notice("Parallel configuration is available for managed local startup only.", "info");
       return;
     }
     this.parallel = await this.options.runtime.parallelStatus();
     this.picker = new Picker({
-      title: `Ollama parallel: ${this.parallel.value ?? "unknown"}`,
-      message: `One agent needs one parallel slot. Extra slots multiply KV-cache and can move layers to CPU. Detected via ${this.parallel.source}. Existing Ollama needs a restart after saving.`,
+      title: `${this.options.chat.engineName} parallel: ${this.parallel.value ?? "unknown"}`,
+      message: `One agent needs one parallel slot. Extra slots multiply KV-cache. Detected via ${this.parallel.source}. ${this.options.chat.currentProvider === "llama.cpp" ? "Applies to the next managed model load." : "Existing Ollama needs a restart after saving."}`,
       showFilter: false,
       selected: "keep",
       items: [
-        { value: "set-one", label: "Set parallel = 1", detail: process.platform === "win32" ? "save Windows user environment" : "use for TinyCode-managed startup", disabled: !this.parallel.canSet },
+        { value: "set-one", label: "Set parallel = 1", detail: this.options.chat.currentProvider === "llama.cpp" ? "TinyCode-managed startup only" : process.platform === "win32" ? "save Windows user environment" : "use for TinyCode-managed startup", disabled: !this.parallel.canSet },
         { value: "keep", label: "Keep current setting", detail: "no changes" },
       ],
     });
@@ -1013,34 +1370,77 @@ export class TinyCodeTui {
   }
 
   private async openModelPicker(): Promise<void> {
-    this.loadingText = "loading models from Ollama…";
+    this.loadingText = "loading model catalogs…";
     this.scheduleRender();
     try {
-      const models = await this.options.chat.listModels();
-      if (models.length === 0) {
-        this.transcript.notice(
-          "No models found. Pull one first, for example: ollama pull qwen2.5-coder:7b",
-          "warn",
-        );
-        return;
+      const groups = await this.options.chat.listProviderModels();
+      const items: PickerItem[] = [];
+      for (const group of groups) {
+        const count = group.models.length;
+        items.push({
+          value: `__heading__${group.provider.id}`,
+          label: group.provider.name,
+          detail: group.error ? "unavailable" : `${count} ${count === 1 ? "model" : "models"}`,
+          heading: true,
+          disabled: true,
+        });
+        if (group.error) {
+          items.push({ value: `__error__${group.provider.id}`, label: "Unavailable", detail: group.error, disabled: true, nested: true });
+        } else if (group.models.length === 0) {
+          items.push({ value: `__empty__${group.provider.id}`, label: "No models found", detail: group.provider.id === "llama.cpp" ? "add a GGUF to ~/.tinytcode/models or llama.modelDirs" : "pull a model with Ollama", disabled: true, nested: true });
+        } else for (const model of group.models) {
+          const current = group.provider.id === this.options.chat.currentProvider && model.id === this.options.chat.currentModel;
+          const details = [current ? "current" : undefined, model.parameterSize, model.quantization, model.sizeBytes ? formatBytes(model.sizeBytes) : undefined].filter((value): value is string => Boolean(value));
+          items.push({ value: JSON.stringify([group.provider.id, model.id]), label: model.name, detail: details.join(" · "), nested: true });
+        }
       }
-      const items: PickerItem[] = models.map((model) => {
-        const details = [
-          model.parameterSize,
-          model.quantization,
-          model.sizeBytes ? formatBytes(model.sizeBytes) : undefined,
-        ].filter((value): value is string => Boolean(value));
-        return { value: model.id, label: model.id, detail: details.join(" · ") };
-      });
       this.pickerKind = "model";
       this.picker = new Picker({
-        title: "Select model",
+        title: "Models",
         placeholder: "Filter models…",
         items,
-        selected: this.options.chat.currentModel,
+        selected: JSON.stringify([this.options.chat.currentProvider, this.options.chat.currentModel]),
+        message: "Models are grouped by engine. Selecting one also switches its engine; weights load only after your prompt.",
+        messageStyle: "muted",
       });
     } catch (error) {
       this.transcript.notice(errorMessage(error), "error");
+    } finally {
+      this.loadingText = null;
+      this.scheduleRender();
+    }
+  }
+
+  private async openRecommendationPicker(): Promise<void> {
+    this.loadingText = "checking hardware recommendations…";
+    this.scheduleRender();
+    try {
+      const recommendations = recommendModels(await this.readMemoryStatus());
+      this.recommendations.clear();
+      for (const model of recommendations) this.recommendations.set(model.id, model);
+      if (!recommendations.length) {
+        this.transcript.notice("No seed-catalog model fits the available RAM/VRAM estimate with at least 32k context.", "warn");
+        return;
+      }
+      const labels: Record<ModelRecommendation["placement"], string> = { vram: "VRAM only", hybrid: "Hybrid RAM / VRAM", ram: "RAM only" };
+      const items: PickerItem[] = [];
+      for (const placement of ["vram", "hybrid", "ram"] as const) {
+        const models = recommendations.filter((model) => model.placement === placement);
+        if (!models.length) continue;
+        items.push({ value: `__heading__${placement}`, label: labels[placement], detail: `${models.length} ${models.length === 1 ? "model" : "models"}`, heading: true, disabled: true });
+        for (const model of models) {
+          const parameters = model.activeParametersB ? `${model.totalParametersB}B A${model.activeParametersB}B` : `${model.totalParametersB}B`;
+          items.push({ value: model.id, label: model.name, detail: `${parameters} · ctx ${model.recommendedContext.toLocaleString("en-US")} · ${model.installEngine}`, nested: true });
+        }
+      }
+      this.pickerKind = "recommendation";
+      this.picker = new Picker({
+        title: "Recommended models",
+        message: "Estimates reserve OS memory and require at least 32k context. Selecting a model asks approval before running its install command.",
+        messageStyle: "muted",
+        placeholder: "Filter recommendations…",
+        items,
+      });
     } finally {
       this.loadingText = null;
       this.scheduleRender();
@@ -1081,13 +1481,17 @@ export class TinyCodeTui {
     if (!picker) return;
     const result = picker.handleKey(key);
     if (result.type === "cancel") {
+      if (this.contextSelection && this.pickerKind === "context") {
+        this.contextSelection.finish(null);
+        this.options.chat.abort();
+      }
       this.picker = null;
       this.pickerKind = null;
-      this.modelSetup = false;
       this.scheduleRender();
       return;
     }
     if (result.type === "update") {
+      this.updateContextPickerFooter();
       this.scheduleRender();
       return;
     }
@@ -1103,39 +1507,60 @@ export class TinyCodeTui {
   private async applyPickerSelection(kind: PickerKind | null, item: PickerItem): Promise<void> {
     try {
       if (kind === "model") {
-        await this.setModel(item.value);
+        let provider = this.options.chat.currentProvider;
+        let model = item.value;
+        try {
+          const decoded = JSON.parse(item.value) as unknown;
+          if (Array.isArray(decoded) && decoded.length === 2 && decoded.every((value) => typeof value === "string")) [provider, model] = decoded as [string, string];
+        } catch { /* Direct /model and old picker callers use a plain model id. */ }
+        if (provider !== this.options.chat.currentProvider) await this.setProvider(provider, false);
+        if (model !== this.options.chat.currentModel) await this.setModel(model);
+        else await this.openThinkingPicker(false);
+      } else if (kind === "recommendation") {
+        const recommendation = this.recommendations.get(item.value);
+        if (!recommendation) throw new Error("Recommendation is no longer available; reopen /recommend.");
+        const result = await this.options.chat.runApprovedCommand(recommendation.installCommand, `Install ${recommendation.name}`);
+        this.transcript.notice(result.output.slice(0, 6_000), result.ok ? "info" : "error");
+        if (result.ok) this.transcript.notice("Installation command completed. Open /models to select the model after its engine discovers it.", "info");
+      } else if (kind === "provider") {
+        await this.setProvider(item.value);
       } else if (kind === "thinking") {
         await this.options.chat.setThinking(item.value);
         await this.saveModelPreference();
         this.transcript.notice(`Thinking: ${item.label}.`, "info");
-        if (this.modelSetup) { this.modelSetup = false; await this.openContextPicker(); }
       } else if (kind === "context") {
         if (item.value === "custom") this.editor.setText("/context ");
         else {
-          await this.options.chat.setContextSize(Number(item.value));
-          await this.saveModelPreference();
-          this.transcript.notice(`Context: ${item.label}; used by the next Ollama request.`, "info");
+          await this.applyContextValue(Number(item.value));
         }
       } else if (kind === "parallel" && item.value === "set-one" && this.options.runtime) {
         this.parallel = await this.options.runtime.setParallelOne();
-        this.options.persistedConfig.ollama.parallel = 1;
-        this.options.config.ollama.parallel = 1;
+        if (this.options.chat.currentProvider === "llama.cpp") {
+          this.options.persistedConfig.llama.parallel = 1; this.options.config.llama.parallel = 1;
+          this.options.chat.clearLoadedRunner(); this.contextReadyModel = null;
+        } else {
+          this.options.persistedConfig.ollama.parallel = 1; this.options.config.ollama.parallel = 1;
+        }
         await this.persistConfig();
         this.transcript.notice(this.parallel.restartRequired
           ? "Saved parallel=1. Completely restart the existing Ollama application/server to apply it; TinyCode did not stop your server."
-          : "Managed Ollama restarted with parallel=1.", "info");
+          : `${this.options.chat.engineName} parallel=1 saved for managed startup.`, "info");
       } else if (kind === "session") {
+        this.contextRestartController?.abort();
         if (this.options.chat.busy) {
-          this.options.chat.abort();
+          this.options.chat.abort(true);
           await this.options.chat.waitForIdle();
         }
+        await this.contextChange?.catch(() => {});
         await this.options.chat.resume(item.value);
         this.transcript.reset();
         this.sessionId = item.value;
         this.scroll = 0;
         this.lastTotalLines = 0;
         this.transcript.notice(`Resumed ${item.value}.`, "info");
-        await this.checkParallel();
+        this.contextReadyModel = null;
+        this.contextCapacity = null;
+        this.runningSnapshot = null;
       }
     } catch (error) {
       this.transcript.notice(errorMessage(error), "error");
@@ -1144,17 +1569,21 @@ export class TinyCodeTui {
   }
 
   private async newSession(): Promise<void> {
+    this.contextRestartController?.abort();
     if (this.options.chat.busy) {
-      this.options.chat.abort();
+      this.options.chat.abort(true);
       await this.options.chat.waitForIdle();
     }
+    await this.contextChange?.catch(() => {});
     await this.options.chat.createSession();
     this.transcript.reset();
     this.sessionId = null;
     this.scroll = 0;
     this.lastTotalLines = 0;
     this.transcript.notice("New session started.", "info");
-    await this.checkParallel();
+    this.contextReadyModel = null;
+    this.contextCapacity = null;
+    this.runningSnapshot = null;
     this.scheduleRender();
   }
 
@@ -1199,7 +1628,7 @@ export class TinyCodeTui {
     );
     this.transcript.notice(
       [
-        `${lines.length} tools (◆ requires approval)`,
+        `${lines.length} tools (○ automatic · ◆ requires approval)`,
         ...lines,
       ].join("\n"),
       "info",
@@ -1221,17 +1650,19 @@ export class TinyCodeTui {
       [
         `Session   ${session.meta.id}`,
         `Title     ${singleLine(session.meta.title)}`,
+        `Engine    ${this.options.chat.engineName}`,
         `Model     ${session.meta.model}`,
         `Cwd       ${session.meta.cwd}`,
         `Messages  ${session.messages.length}`,
-        `Context   up to ${this.options.config.context.maxMessages} messages / ${this.options.config.context.maxChars} chars`,
+        `Goal      ${session.meta.goal ? `${singleLine(session.meta.goal.text)} · ${session.meta.goal.continuations} continuations` : "off"}`,
+        `Context   ${this.options.chat.contextLimit.toLocaleString("en-US")} tokens · full history until compaction`,
         `Pressure  ${(this.options.chat.contextPressure * 100).toFixed(0)}% · auto compact at ${(this.options.config.compaction.threshold * 100).toFixed(0)}%`,
         `Tools     ${this.options.chat.toolsEnabled ? `enabled · ${this.options.chat.toolCount}` : "disabled"}${
           this.options.chat.toolsEnabled
             ? ` · approval ${this.options.config.tools.autoApprove ? "auto" : "ask"}`
             : ""
         }`,
-        `Profile   ${this.options.config.tools.profile}`,
+        `Profile   ${this.options.chat.currentToolProfile}`,
         `MCP       ${Object.values(this.options.config.mcp.servers).filter((server) => server.enabled).length} configured`,
         `Prompt    ${this.options.promptSource ?? "built-in"}`,
         `Compact   ${session.meta.compaction
@@ -1288,13 +1719,20 @@ export class TinyCodeTui {
       this.approval = null;
       approval.finish(false);
     }
-    this.options.chat.abort();
+    this.options.chat.abort(true);
+    this.contextRestartController?.abort();
+    this.contextSelection?.finish(null);
     this.parser.dispose();
-    void this.options.chat.waitForIdle().finally(() => this.resolveExit?.());
+    void this.options.chat.waitForIdle().finally(async () => {
+      await this.contextChange?.catch(() => {});
+      this.resolveExit?.();
+    });
   }
 
   private cleanup(): void {
     this.exiting = true;
+    this.contextSelection?.finish(null);
+    this.contextRestartController?.abort();
     if (this.approval) {
       const approval = this.approval;
       this.approval = null;

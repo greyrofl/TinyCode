@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 export function isEnoent(error: unknown): boolean {
   return (
@@ -43,17 +44,21 @@ export async function readJson<T>(file: string): Promise<T | null> {
   }
 }
 
-export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+async function writeTextAtomic(file: string, body: string): Promise<void> {
   await ensureDir(path.dirname(file));
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
+    await writeFile(temp, body, { encoding: "utf8", flag: "wx" });
     await rename(temp, file);
-  } catch {
-    // Windows can refuse to replace an open file. Fall back to a direct write.
-    await rm(file, { force: true });
-    await rename(temp, file);
+  } finally {
+    // Never delete the original on rename/locking failure. Keep the previous
+    // complete file rather than risking a missing config or session history.
+    await rm(temp, { force: true }).catch(() => {});
   }
+}
+
+export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  await writeTextAtomic(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 export async function appendJsonl(file: string, value: unknown): Promise<void> {
@@ -65,6 +70,11 @@ export async function writeJsonl(file: string, values: unknown[]): Promise<void>
   await ensureDir(path.dirname(file));
   const body = values.map((value) => JSON.stringify(value)).join("\n");
   await writeFile(file, body ? `${body}\n` : "", "utf8");
+}
+
+export async function writeJsonlAtomic(file: string, values: unknown[]): Promise<void> {
+  const body = values.map((value) => JSON.stringify(value)).join("\n");
+  await writeTextAtomic(file, body ? `${body}\n` : "");
 }
 
 export async function readJsonl<T>(file: string): Promise<T[]> {

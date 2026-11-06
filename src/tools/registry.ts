@@ -9,6 +9,7 @@ import {
   readFilesTool,
 } from "./advanced-file-tools.js";
 import { fetchUrlTool } from "./fetch-tool.js";
+import { webSearchTool } from "./web-search-tool.js";
 import { createFileTool, deleteFileTool, listDirTool, readFileTool, replaceFileTool } from "./file-tools.js";
 import { gitDiffTool, gitLogTool, gitShowTool, gitStatusTool } from "./git-tools.js";
 import { applyPatchTool } from "./patch-tool.js";
@@ -19,7 +20,7 @@ import { verifyTool } from "./verify-tool.js";
 import { diagnosticsTool } from "./lsp-tool.js";
 import type { Tool, ToolDefinition, ToolProfile, ToolTier } from "./types.js";
 
-const READ = new Set(["read_file", "read_files", "list_dir", "find_files", "search_text", "file_info", "git_status", "git_diff", "git_log", "git_show", "diagnostics"]);
+const READ = new Set(["read_file", "read_files", "list_dir", "find_files", "search_text", "file_info", "git_status", "git_diff", "git_log", "git_show", "diagnostics", "fetch_url", "web_search"]);
 const WRITE = new Set(["create_file", "replace_file", "edit_file", "apply_patch", "make_directory", "move_path", "copy_path", "delete_file", "delete_directory"]);
 const VERIFY = new Set(["verify"]);
 const ALWAYS = new Set(["say"]);
@@ -123,6 +124,7 @@ export function createDefaultTools(): ToolRegistry {
     .register(gitLogTool)
     .register(gitShowTool)
     .register(fetchUrlTool)
+    .register(webSearchTool)
     .register(executeCommandTool)
     .register(verifyTool)
     .register(diagnosticsTool)

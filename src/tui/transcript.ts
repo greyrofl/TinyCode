@@ -1,4 +1,4 @@
-import type { Message, ToolPart } from "../core/session/types.js";
+import type { Message, QueuedInput, ToolPart } from "../core/session/types.js";
 import { messageVersion, textOf } from "../core/session/types.js";
 import type { NoticeLevel } from "../core/types.js";
 import { displayWidth, truncateWidth, wrapPlain } from "../util/ansi.js";
@@ -60,7 +60,10 @@ function toolStatus(part: ToolPart): { glyph: string; label: string } {
 export class Transcript {
   private messages: Message[] = [];
   private notices: Notice[] = [];
+  private queuedInputs: QueuedInput[] = [];
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly expandedGoals = new Set<string>();
+  private goalHits: Array<{ line: number; id: string }> = [];
 
   hideBefore = 0;
   showReasoning = true;
@@ -71,12 +74,16 @@ export class Transcript {
   reset(): void {
     this.messages = [];
     this.notices = [];
+    this.queuedInputs = [];
     this.cache.clear();
+    this.expandedGoals.clear();
+    this.goalHits = [];
     this.hideBefore = 0;
   }
 
-  sync(messages: Message[]): void {
+  sync(messages: Message[], queuedInputs: QueuedInput[] = []): void {
     this.messages = messages;
+    this.queuedInputs = queuedInputs;
     const alive = new Set(messages.map((message) => message.id));
     for (const id of this.cache.keys()) {
       if (!alive.has(id)) this.cache.delete(id);
@@ -111,15 +118,47 @@ export class Transcript {
       if (notice.at <= this.hideBefore) continue;
       entries.push({ at: notice.at, order: order++, lines: this.noticeLines(notice, width) });
     }
+    for (const [index, queued] of this.queuedInputs.entries()) {
+      if (queued.createdAt <= this.hideBefore) continue;
+      const wrapped = wrapPlain(sanitizeText(queued.text), Math.max(10, width - 8)).slice(0, 3);
+      entries.push({
+        at: queued.createdAt,
+        order: order++,
+        lines: [
+          [{ text: `  ◌ queued #${index + 1}`, style: { fg: this.palette.faint, bold: true } }],
+          ...wrapped.map((text) => [{ text: "    ", style: { fg: this.palette.faint } }, { text, style: { fg: this.palette.faint, dim: true, italic: true } }]),
+          [],
+        ],
+      });
+    }
 
     entries.sort((a, b) => a.at - b.at || a.order - b.order);
-    return entries.flatMap((entry) => entry.lines);
+    const lines = entries.flatMap((entry) => entry.lines);
+    const ids = this.messages.flatMap((message) => message.createdAt <= this.hideBefore ? []
+      : message.parts.flatMap((part) => part.type === "goal_review" ? [part.id] : []));
+    let goalIndex = 0;
+    this.goalHits = [];
+    for (const [line, value] of lines.entries()) {
+      if (!value.some((span) => /Goal · (?:continue|work done)/.test(span.text))) continue;
+      const id = ids[goalIndex++];
+      if (id) this.goalHits.push({ line, id });
+    }
+    return lines;
+  }
+
+  toggleGoalAt(line: number): boolean {
+    const hit = this.goalHits.find((item) => item.line === line);
+    if (!hit) return false;
+    if (this.expandedGoals.has(hit.id)) this.expandedGoals.delete(hit.id);
+    else this.expandedGoals.add(hit.id);
+    this.cache.clear();
+    return true;
   }
 
   private messageLines(message: Message, width: number): Line[] {
     const version =
       messageVersion(message) +
-      `|r${this.showReasoning ? 1 : 0}|t${this.showToolOutput ? 1 : 0}`;
+      `|r${this.showReasoning ? 1 : 0}|t${this.showToolOutput ? 1 : 0}|g${message.parts.filter((part) => part.type === "goal_review").map((part) => this.expandedGoals.has(part.id) ? "1" : "0").join("")}`;
     const cached = this.cache.get(message.id);
     if (cached && cached.width === width && cached.version === version) return cached.lines;
 
@@ -240,6 +279,32 @@ export class Transcript {
         if (part.text.trim()) {
           blocks.push(renderMarkdown(part.text, bodyWidth, palette).map((line) => withIndent(line, "  ")));
         }
+      } else if (part.type === "steering") {
+        if (part.text.trim()) {
+          blocks.push([
+            [{ text: "  ▌ ", style: { fg: palette.user } }, { text: "queued user message", style: { fg: palette.user, bold: true } }],
+            ...renderMarkdown(part.text, Math.max(8, bodyWidth - 4), palette).map((line) => withIndent(line, "    ")),
+          ]);
+        }
+      } else if (part.type === "goal_review") {
+        const done = part.verdict === "work_done";
+        const color = done ? palette.success : palette.warn;
+        const expanded = this.expandedGoals.has(part.id);
+        const block: Line[] = [
+          [
+            { text: `  ${expanded ? "▾" : "▸"} `, style: { fg: color } },
+            { text: `Goal · ${done ? "work done" : "continue"}`, style: { fg: color, bold: true } },
+            { text: expanded ? "" : "  click to expand", style: { fg: palette.faint, dim: true } },
+          ],
+        ];
+        if (expanded) block.push(
+          ...renderMarkdown(part.text, Math.max(8, bodyWidth - 6), palette).map((line): Line => [
+            { text: "    ┊ ", style: { fg: palette.faint } },
+            ...line.map((span) => ({ ...span, style: { fg: palette.muted, ...span.style } })),
+          ]),
+          [{ text: `    ↳ ${part.tool}`, style: { fg: color, bold: true } }],
+        );
+        blocks.push(block);
       } else if (part.type === "tool") {
         blocks.push(this.renderTool(part, bodyWidth));
       }

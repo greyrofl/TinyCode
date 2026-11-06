@@ -21,7 +21,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: ToolParameters;
-  /** Safe tools run without confirmation. */
+  /** Run without per-call confirmation; this is not a safety guarantee. */
   safe: boolean;
   /** Short human-readable summary shown in the transcript and approval dialog. */
   summary(input: Record<string, unknown>): string;

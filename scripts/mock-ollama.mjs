@@ -32,6 +32,7 @@ const models = [
     details: { family: "qwen3", parameter_size: "1.7B", quantization_level: "Q4_K_M" },
   },
 ];
+let running = null;
 
 function sendJson(response, value) {
   response.writeHead(200, { "content-type": "application/json" });
@@ -46,6 +47,11 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "GET" && request.url === "/api/tags") {
     sendJson(response, { models });
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/api/ps") {
+    sendJson(response, { models: running ? [running] : [] });
     return;
   }
 
@@ -68,12 +74,29 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/generate") {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const payload = JSON.parse(body);
+    const selected = models.find((model) => model.name === payload.model);
+    if (!selected) { response.writeHead(404); response.end(JSON.stringify({ error: "model not found" })); return; }
+    const context = Number(payload.options?.num_ctx) || 8192;
+    running = { name: selected.name, model: selected.name, size: selected.size + context * 32_768, size_vram: selected.size, context_length: context };
+    sendJson(response, { model: selected.name, response: "", done: true, done_reason: "load" });
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/chat") {
     let body = "";
     for await (const chunk of request) body += chunk;
     const payload = JSON.parse(body);
     const last = payload.messages?.at(-1)?.content ?? "";
     const model = payload.model ?? "mock";
+    const selected = models.find((item) => item.name === model);
+    if (selected) {
+      const context = Number(payload.options?.num_ctx) || 8192;
+      running = { name: selected.name, model: selected.name, size: selected.size + context * 32_768, size_vram: selected.size, context_length: context };
+    }
     const hasObservation = payload.messages?.some(
       (message) => message.role === "user" && message.content.startsWith("[Observation:"),
     );

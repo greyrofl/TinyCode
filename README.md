@@ -8,600 +8,576 @@
   █   ███ █   █   █    ████  ███  ████  █████
 </pre>
 
-### Терминальный coding-агент для маленьких локальных моделей
+### Терминальный coding-агент для локальных моделей
 
-`Ollama` · `1–14B` · `без облака` · `TUI`
+`llama.cpp` · `Ollama` · `OpenAI-compatible` · `GGUF` · `TUI`
 
-[![version](https://img.shields.io/badge/version-0.5.0-7dd3fc?style=flat-square)](#что-нового-в-05)
+[![version](https://img.shields.io/badge/version-0.6.0-7dd3fc?style=flat-square)](#что-нового-в-060)
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020.11-339933?style=flat-square&logo=node.js&logoColor=white)](#быстрый-старт)
-[![ollama](https://img.shields.io/badge/Ollama-local-111827?style=flat-square)](https://ollama.com)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4b5563?style=flat-square)](#быстрый-старт)
 [![license](https://img.shields.io/badge/license-MIT-86efac?style=flat-square)](LICENSE)
 
 </div>
 
-TinyCode — агент для терминала, который работает с моделями **1–14B** через
-[Ollama](https://ollama.com) (а при достаточной VRAM — и с более крупными).
-Никаких облачных API: модель, файлы и сессии остаются на вашей машине.
-Интерфейс вдохновлён OpenCode, но TUI, агентский цикл и протокол инструментов
-написаны с нуля под ограничения маленьких моделей.
+TinyCode — локальный coding-агент с собственным TUI, agent loop и 29
+инструментами. Он запускает GGUF напрямую через
+[llama.cpp](https://github.com/ggml-org/llama.cpp), работает с
+[Ollama](https://ollama.com) и подключается к пользовательским
+OpenAI-compatible API.
 
-```
-$ ollama pull qwen2.5-coder:7b
-$ cd my-project
-$ tinycode
-```
+TinyCode рассчитан на модели, которым нужен строгий harness: staged tools,
+read-before-edit, контроль повторов, durable history, context compaction,
+очередь сообщений и отдельная проверка цели через `/goal`.
 
----
-
-## Почему TinyCode
-
-- **Текстовый протокол вместо native function calling.** Модели 1–14B заметно
-  стабильнее выдают `<tool_call>{"name":...}</tool_call>`, чем JSON-schema
-  function calling. Парсер при этом умеет чинить типичные ошибки JSON.
-- **Проверяется результат, а не обещание.** «Сейчас исправлю» без изменения файла
-  не считается выполнением. Финал принимается только после фактического действия
-  и проверки.
-- **Маленькая модель не обязана быть самостоятельной.** Промт, stage-профили
-  tools, `read_before_edit`, fingerprint повторных ошибок и `verify` берут на себя
-  ту дисциплину, которой у 7B обычно не хватает.
-- **Рассчитан на один GPU.** Один parallel slot, `num_ctx` под сессию, честные
-  счётчики токенов и предупреждение, если Ollama вытесняет слои в CPU.
+> Модельные веса автоматически не скачиваются. Если отсутствует сам
+> `llama-server`, TinyCode может установить официальный бинарный релиз с
+> проверкой размера и SHA-256.
 
 ## Содержание
 
 - [Быстрый старт](#быстрый-старт)
-- [Что нового в 0.5](#что-нового-в-05)
-- [Возможности](#возможности)
+- [Что нового в 0.6.0](#что-нового-в-060)
+- [Движки и модели](#движки-и-модели)
+- [Agent loop, очередь и goal](#agent-loop-очередь-и-goal)
+- [Контекст и память](#контекст-и-память)
 - [Tools](#tools)
-- [CLI](#cli)
-- [TUI](#tui)
+- [CLI и TUI](#cli-и-tui)
 - [Конфигурация](#конфигурация)
-- [Модели и железо](#модели-и-железо)
-- [Архитектура](#архитектура)
+- [Производительность](#производительность)
 - [Разработка](#разработка)
 - [Ограничения](#ограничения)
-- [Документация](#документация)
 
 ---
 
 ## Быстрый старт
 
-Нужны **Node.js 20.11+** и установленный [Ollama](https://ollama.com). Если
-Ollama слушает loopback и ещё не запущена, TinyCode поднимет её сам; внешние
-серверы он не стартует.
+Нужен **Node.js 20.11+** и локальная instruct-модель.
 
 ```bash
-# 1. модель
-ollama pull qwen2.5-coder:7b
-
-# 2. сам агент
 git clone https://github.com/greyrofl/TinyCode.git
 cd TinyCode
 npm install
 npm run build
 npm link
+```
 
-# 3. работа
+### Вариант 1: локальный GGUF через llama.cpp
+
+```bash
 cd ~/projects/my-app
+tinycode --provider llama.cpp --model /path/to/model.gguf
+```
+
+Если `llama-server` уже находится в PATH или указан через
+`llama.executable`, TinyCode использует его. Иначе движок устанавливается в
+`~/.tinytcode/engines/llama.cpp` при первой загрузке модели.
+
+### Вариант 2: Ollama
+
+```bash
+ollama pull qwen2.5-coder:7b
+cd ~/projects/my-app
+tinycode --provider ollama --model qwen2.5-coder:7b
+```
+
+### Интерактивный выбор
+
+```bash
 tinycode
 ```
 
-После `npm link` команда `tinycode` доступна из любой папки, а текущая папка
-становится рабочим каталогом агента.
+Главный экран открывается без загрузки весов. Используйте `/models`: модели
+показаны единым списком с секциями **Ollama**, **llama.cpp** и настроенных
+внешних providers.
 
-> **npm-пакет.** Имя пакета — `tinycode-cli`, бинарника — `tinycode` (имя
-> `tinycode` в npm занято). Пакет подготовлен к публикации, но в реестр пока не
-> выложен. После публикации установка будет такой:
->
-> ```bash
-> npm install --global tinycode-cli
-> ```
+GGUF автоматически ищутся в:
 
-## Что нового в 0.5
-
-- **Профили tools**: `/profile auto|plan|edit|full` и `--profile`. `auto` ведёт
-  агента по этапам plan → edit → verify, а не выдаёт сразу все 28 инструментов.
-- **`verify`** сам определяет стек (npm scripts, pytest, Cargo, Go, .NET) и
-  запускает проверки. Не найденная проверка — ошибка, а не «всё хорошо».
-- **`diagnostics`** использует локальный LSP (`typescript-language-server`,
-  `pylsp`, `rust-analyzer`, `gopls`) либо syntax fallback. Молчание LSP не
-  считается отсутствием ошибок.
-- **`read_before_edit`**: `edit_file` и `replace_file` требуют успешного чтения
-  этого файла в сессии.
-- **Repair**: ошибка JSON показывает фрагмент, схему конкретного tool и валидный
-  пример; повторная ошибка получает подсказку о следующем действии.
-- **MCP**: локальные stdio-серверы из конфига, tools вида
-  `mcp_<server>_<tool>`, по умолчанию с approval.
-- **Sampling profiles** вместо неявного выбора по числам temperature/topP.
-- **Observations**: старые сокращаются head+tail, свежая сохраняется целиком,
-  если помещается в бюджет.
-- **Windows**: автозапуск Ollama больше не создаёт отдельную detached-консоль.
-
-Подробно, включая компромиссы и то, что осталось выключенным:
-[`docs/RELEASE_0.5.md`](docs/RELEASE_0.5.md).
+- `~/.tinytcode/models`;
+- `./models` текущего проекта;
+- `LLAMA_CACHE` или `~/.cache/llama.cpp`;
+- каталогах `llama.modelDirs`;
+- локальном Ollama cache — без копирования многогигабайтных blobs.
 
 ---
 
-## Возможности
+## Что нового в 0.6.0
 
-### Агентский цикл
+### Очередь запросов
 
-```
-read → act → observe → verify → answer
-```
+Обычное сообщение во время agent run больше не отклоняется. Оно сохраняется в
+FIFO-очередь и передаётся модели после текущего tool observation, перед следующим
+model request. Параллельных веток модели или файловых операций не создаётся.
 
-Модель вызывает один инструмент за шаг, получает `[Observation: ...]` и
-продолжает до финального ответа. TinyCode:
+Пока сообщение ожидает отправки, оно отображается тихой серой строкой внизу
+transcript. Очередь хранится в метаданных сессии и защищена от дубликатов при
+checkpoint/resume.
 
-- скрывает служебные `<tool_call>` из ленты;
-- блокирует no-op правки и повторные неизменные вызовы;
-- останавливает серию malformed/failed шагов;
-- не принимает план вместо действия;
-- возвращает модели diff и актуальные строки после правки;
-- прямо запрещает править тесты, чтобы скрыть падение.
-
-### Профили tools
-
-| Профиль | Что доступно | Когда использовать |
-| --- | --- | --- |
-| `auto` | чтение всегда; запись после чтения; verify после правки | по умолчанию |
-| `plan` | только чтение, git, поиск, `verify` для исходных тестов | анализ и планирование |
-| `edit` | чтение + запись + verify | обычная правка кода |
-| `full` | всё, включая shell, process и MCP tools | shell/server/network задачи |
-
-Переключение: `/profile` в TUI или `--profile full` в CLI. Approval при этом
-никуда не исчезает.
-
-### Проверка результата
-
-`verify(mode=quick|full)` находит проект и запускает его проверки:
-
-- Node: package scripts (`typecheck`, `test`, `lint`, `build`) через npm, pnpm
-  или yarn;
-- Python: pytest;
-- Rust: Cargo;
-- Go: `go test`;
-- .NET: solution.
-
-`quick` — typecheck/tests, `full` — ещё lint/build. `diagnostics(path)` даёт
-ошибки компилятора/линтера с `path:line:column` и не выдаёт отсутствие LSP за
-чистый результат.
-
-### Контекст и память
-
-При приближении к лимиту старые завершённые ходы сжимаются в структурированную
-Markdown-память. Свежие сообщения остаются нетронутыми, исходные
-`messages.jsonl` не удаляются. Если модель не смогла суммаризировать, включается
-детерминированный extractive fallback.
-
-Внизу экрана — реальные токены последнего запроса; `~` означает оценку во время
-стриминга. После compaction, смены модели или контекста метрика пересчитывается.
-
-### Сессии
+### `/goal <task>`
 
 ```text
-~/.tinytcode/
-  config.json
-  history.json
-  sessions/
-    ses_xxx/
-      meta.json        # модель, контекст, thinking, compacted memory
-      messages.jsonl   # ordered parts: reasoning / text / tool
+/goal Исправить авторизацию и проверить вход
 ```
 
-Сессию можно продолжить (`--continue`, `tinycode resume`), экспортировать в
-Markdown (`/export`) или сжать вручную (`/compact`).
+После candidate final запускается отдельный evaluator. У него нет project tools,
+только два виртуальных verdict-вызова:
+
+- `continue_work` — вернуть feedback основному агенту и продолжить;
+- `work_done` — принять final и удалить goal.
+
+Goal Review отображается свёрнутым блоком и раскрывается кликом. Число
+continuations ограничено. По умолчанию evaluator использует активную модель;
+в конфиге можно назначить другой provider/model.
+
+```text
+/goal off
+```
+
+отключает активную цель.
+
+### Новая completion policy
+
+`verify` остаётся доступным инструментом, но больше не является обязательным
+после любого изменения. TinyCode требует фактический evidence, когда:
+
+- пользователь явно попросил запустить tests/build/typecheck;
+- модель заявляет, что проверки прошли.
+
+Отрицательные формулировки вроде «я **не утверждаю**, что тесты прошли» не
+считаются заявлением об успехе. Для research, чтения проекта и задач с явным
+запретом тестов evaluator не требует бессмысленную проверку.
+
+### Web search
+
+Новый `web_search` использует no-key endpoint DuckDuckGo и возвращает title,
+URL и snippet. Результаты считаются недоверенными; содержимое выбранного источника
+агент читает через `fetch_url`.
+
+DuckDuckGo может временно ограничить no-key HTML endpoint. TinyCode сообщает
+такую ошибку явно и не подменяет результаты выдуманным ответом.
+
+### OpenAI-compatible providers
+
+Можно добавить пользовательский локальный или удалённый сервер. Модели,
+context и thinking capabilities задаются вручную; TinyCode не пытается угадать
+RAM/VRAM, загрузить модель или перезапустить чужой процесс.
+
+### Рекомендации моделей
+
+`/recommend` сравнивает небольшой встроенный каталог с общими RAM/VRAM и
+оценивает модель при контексте не меньше 32k. Результаты делятся на:
+
+- **VRAM only**;
+- **Hybrid RAM / VRAM**;
+- **RAM only**.
+
+Install command запускается только после обычного command approval.
+
+---
+
+## Движки и модели
+
+| Возможность | llama.cpp | Ollama | OpenAI-compatible |
+| --- | --- | --- | --- |
+| Модели | локальный GGUF | библиотека Ollama | вручную в конфиге |
+| Управление процессом | owned `llama-server` | локальный `ollama serve` | сервер пользователя |
+| RAM/VRAM telemetry | да, если доступна | `/api/ps` | нет |
+| Physical context reload | controlled child restart | unload/reload runner | не управляется |
+| Thinking | GGUF template + `/props` | `/api/show` | вручную в конфиге |
+| Автоустановка движка | официальный verified binary | нет | нет |
+
+Новые конфиги используют llama.cpp. Существующие конфиги и сессии без поля
+`provider` остаются на Ollama.
+
+При переходе Ollama → llama.cpp выгружается только matching выбранный Ollama
+runner. Daemon и другие модели не останавливаются. Это предотвращает одновременную
+загрузку двух копий одного большого GGUF.
+
+На Windows direct llama.cpp по умолчанию использует:
+
+- `loadMode: "none"` — без удержания полного mmap GGUF в working set;
+- `fitTargetMiB: 512`;
+- batch/ubatch `256`;
+- `parallel: 1`.
+
+Внешний или чужой llama-server никогда не останавливается автоматически.
+
+Подробнее: [`docs/ENGINES.md`](docs/ENGINES.md).
+
+---
+
+## Agent loop, очередь и goal
+
+```text
+user → model stream → tool → observation → model stream → candidate final
+          ↑                                     │
+          └──── queued steering ────────────────┘
+                                                │
+                                       goal evaluator
+                                      ↙              ↘
+                              continue_work       work_done
+```
+
+Reasoning, обычный текст и tool-call одного model request приходят единым
+stream. После tool-call TinyCode выполняет инструмент локально и только затем
+делает следующий запрос модели. Поэтому queued input внедряется после завершения
+tool, а не параллельно ему.
+
+Каждый tool проходит через общий pipeline:
+
+1. parse/repair протокола;
+2. проверка active profile;
+3. read-before-edit и repeat guards;
+4. approval, если требуется;
+5. выполнение;
+6. `[Observation: ...]` в следующем model request.
+
+Поддерживаются оба tool-формата:
+
+```text
+<tool_call>{"name":"read_file","arguments":{"path":"src/index.ts"}}</tool_call>
+```
+
+и нативный llama.cpp/Gemma DSL:
+
+```text
+<|tool_call>call:read_file{path:"src/index.ts"}<tool_call|>
+```
+
+Нативный DSL скрывается из обычного ответа, преобразуется в JSON и проходит те
+же guards/approval. Незавершённый tool-call никогда не исполняется.
+
+---
+
+## Контекст и память
+
+TinyCode не загружает модель при открытии TUI или выборе модели. Первое сообщение
+сначала сохраняется, затем модель загружается с небольшим baseline и открывается
+memory-aware context picker.
+
+Для llama.cpp picker показывает:
+
+- **Estimated fit** — рекомендацию по текущим RAM/VRAM и KV metadata;
+- **Model limit** — предел из GGUF;
+- варианты выше оценки — доступны и помечены `verify on reload`.
+
+Оценка llama.cpp не является жёстким потолком: `--fit` может перераспределить
+weights между VRAM и RAM во время reload. Если выбранный размер не помещается,
+TinyCode делает один bounded cleanup/retry и откатывает context без потери prompt.
+
+До compaction модель получает всю активную историю — без старого ограничения
+24 messages / 24k characters. При давлении старый завершённый префикс сжимается
+в durable Markdown memory. Исходные сообщения остаются в `messages.jsonl`.
+
+Перед llama.cpp generation вся история дополнительно проходит через собственные
+`/apply-template` и `/tokenize`; если реальное число токенов не помещается,
+запрос отклоняется без скрытой truncation/context shift.
 
 ---
 
 ## Tools
 
-28 встроенных инструментов плюс подключённые MCP-серверы.
+29 встроенных инструментов плюс tools подключённых MCP-серверов.
 
 | Группа | Инструменты |
 | --- | --- |
-| Чтение и поиск | `read_file`, `read_files`, `list_dir`, `find_files`, `search_text`, `file_info` |
-| Изменение | `create_file`, `edit_file`, `apply_patch`, `replace_file` |
+| Чтение | `read_file`, `read_files`, `list_dir`, `find_files`, `search_text`, `file_info` |
+| Изменение | `create_file`, `replace_file`, `edit_file`, `apply_patch` |
 | Пути | `make_directory`, `move_path`, `copy_path`, `delete_file`, `delete_directory` |
-| Git (read-only) | `git_status`, `git_diff`, `git_log`, `git_show` |
-| Проверка | `verify`, `diagnostics` |
+| Git | `git_status`, `git_diff`, `git_log`, `git_show` |
+| Проверка | `diagnostics`, `verify` |
 | Команды | `execute_command` |
-| Фоновые процессы | `start_process`, `process_status`, `list_processes`, `stop_process` |
-| Сеть | `fetch_url` |
+| Процессы | `start_process`, `process_status`, `list_processes`, `stop_process` |
+| Интернет | `web_search`, `fetch_url` |
 | Ответ | `say` |
 
-**Защита**
+Файловые операции, чтение, поиск и HTTP fetch выполняются автоматически.
+Approval требуется для `execute_command`, `start_process`, `verify` и MCP tools
+с явным `safe:false`.
 
-- файловые операции ограничены рабочей папкой, `..` и symlink-выходы запрещены;
-- `create_file` не перезаписывает существующий файл;
-- `edit_file` делает точную замену и отказывается при неоднозначном совпадении;
-- `apply_patch` сначала выполняет `git apply --check`;
-- у команд есть timeout и лимит вывода;
-- managed-процессы останавливаются при выходе;
-- сеть, запись, удаление и shell требуют approval: `y` — один раз, `a` — до
-  конца сессии, `n`/`Esc` — отказ;
-- `--yes` / `tools.autoApprove` отключают запросы — используйте осознанно.
+Файловые tools ограничены рабочей папкой; `..` и symlink escapes запрещены.
+Commands и MCP не являются sandbox — подключайте только доверенные программы.
 
-Протокол вызова:
+### Tool profiles
 
-```text
-<tool_call>
-{"name":"read_file","arguments":{"path":"src/index.ts"}}
-</tool_call>
-```
+| Профиль | Назначение |
+| --- | --- |
+| `auto` | staged plan → edit → review |
+| `plan` | чтение, поиск, git и diagnostics |
+| `edit` | чтение + изменение + checks |
+| `full` | всё, включая shell/process/network/MCP |
+
+При `tools.profileByModel: true`: модели меньше 20B получают `auto`, от 20B —
+`full`. Для MoE используется полный размер, а не active parameters.
 
 ---
 
-## CLI
+## CLI и TUI
+
+### CLI
 
 ```text
 tinycode [options]                 интерактивный TUI
-tinycode run [options] [prompt]    one-shot; читает stdin, если есть pipe
-tinycode resume [session]          открыть сессию (последнюю по умолчанию)
-tinycode compact [session]         сжать старые ходы в durable memory
-tinycode models [--json]           модели Ollama
-tinycode tools [--json]            tools и уровень approval
+tinycode run [options] [prompt]    one-shot; читает stdin из pipe
+tinycode resume [session]          продолжить сессию
+tinycode compact [session]         сжать старую историю
+tinycode models [--json]           модели выбранного provider
+tinycode tools [--json]            tools и approval
 tinycode sessions [--json]         сохранённые сессии
 tinycode config [--path|--json]    конфигурация
-tinycode doctor                    диагностика Ollama, tools и prompt
+tinycode doctor                    диагностика
 ```
 
-| Опция | Назначение |
+Основные флаги:
+
+| Флаг | Назначение |
 | --- | --- |
-| `-m, --model <name>` | модель для запуска |
-| `-s, --session <id>` | конкретная сессия |
-| `-c, --continue` | продолжить последнюю сессию |
-| `--cwd <dir>` | рабочая папка агента |
-| `-y, --yes` | автоматически разрешить опасные tools |
-| `--thinking` | в `run` писать thinking в stderr |
-| `--think <mode>` | реальный режим thinking: `off`, `on`, `auto` или named level |
-| `--context <n>` | размер контекста этой сессии (`num_ctx`) |
-| `--profile <name>` | `auto`, `plan`, `edit`, `full` |
-| `--json` | machine-readable вывод для `models`/`sessions`/`config` |
+| `--provider <id>` | llama.cpp, Ollama или configured provider |
+| `-m, --model <id>` | модель / путь к GGUF |
+| `--context <n>` | context текущей сессии |
+| `--think <mode>` | режим thinking |
+| `--profile <name>` | `auto`, `plan`, `edit`, `full`, `model` |
+| `-y, --yes` | автоматически разрешать approval-команды |
+| `--thinking` | писать reasoning в stderr в one-shot режиме |
 
-В one-shot режиме stdout содержит только обычный ответ: thinking, статусы tools и
-approval-предупреждения идут в stderr, поэтому `tinycode run ... > patch.md`
-безопасен.
+В `tinycode run` stdout содержит только обычный ответ; statuses, tools,
+reasoning и approvals идут в stderr.
 
-```bash
-tinycode run "объясни структуру проекта"
-tinycode run --yes "запусти тесты и исправь падение"
-tinycode run --thinking "проанализируй этот модуль"
-echo "прочитай package.json" | tinycode run
-```
-
----
-
-## TUI
-
-Thinking, ответ и tool-вызовы — отдельные блоки, поэтому после перезапуска и
-экспорта они не смешиваются:
-
-```text
-◇ thinking
-┊ краткое рассуждение модели
-
-✔ read_file  done
-  │ File: src/index.ts ...
-
-✔ edit_file  done
-  │ - return items[index];
-  │ + return items[index - 1];
-
-Проверил: typecheck и 3 теста проходят.
-```
-
-Стартовый экран показывает блочный wordmark с градиентом, строку
-`local models · real code · N tools` и карточку сессии: model, thinking, context,
-folder с подсказками slash-команд.
-
-<details>
-<summary><b>Клавиши</b></summary>
-
-| Клавиша | Действие |
-| --- | --- |
-| `Enter` | отправить |
-| `Alt+Enter` / `Ctrl+J` | новая строка |
-| `Tab` | дополнить slash-команду |
-| `↑` / `↓` | история composer |
-| колесо | прокрутка чата |
-| `Shift+↑` / `Shift+↓` | прокрутка на строку |
-| `PgUp` / `PgDn` | прокрутка на страницу |
-| `Esc` | отменить генерацию / очистить ввод / закрыть |
-| `Ctrl+C` | отменить, очистить, затем выйти |
-| `Ctrl+D` | выйти при пустом composer |
-| `Ctrl+A` / `Ctrl+E` | начало / конец строки |
-| `Ctrl+W` | удалить слово слева |
-| `Ctrl+U` / `Ctrl+K` | удалить до начала / конца строки |
-| `Ctrl+L` | полная перерисовка |
-
-</details>
-
-<details>
-<summary><b>Slash-команды</b></summary>
+### Slash-команды
 
 | Команда | Действие |
 | --- | --- |
-| `/help` | команды, tools и клавиши |
-| `/model [name]` | пикер или установка модели |
-| `/new` | новая сессия |
-| `/sessions` | переключить сессию |
-| `/retry` | перегенерировать последний ответ |
-| `/compact` | сжать старые ходы |
-| `/memory` | показать compacted memory |
-| `/tools` | tools и уровень approval |
-| `/reasoning` | показать/скрыть thinking |
-| `/think [mode]` | режим генерации thinking |
-| `/context [tokens]` | context window Ollama |
-| `/profile <name>` | `auto`, `plan`, `edit`, `full` |
-| `/parallel` | проверить parallel и сохранить `1` |
-| `/clear` | очистить экран без потери сессии |
-| `/export [path]` | Markdown с thinking и tool calls |
-| `/info` | session/model/context/tools/prompt/config |
-| `/quit`, `/exit` | выход |
+| `/models` | модели, сгруппированные по providers |
+| `/model [id]` | выбрать модель текущего provider |
+| `/provider [id]` | явно сменить provider |
+| `/recommend` | модели под доступные RAM/VRAM |
+| `/goal <task>` | задать цель evaluator; `/goal off` — очистить |
+| `/context [tokens]` | context picker / ручной размер |
+| `/think [mode]` | thinking mode |
+| `/profile [name]` | tool profile |
+| `/new`, `/sessions` | новая / другая сессия |
+| `/retry` | повторить последний user request |
+| `/compact`, `/memory` | сжатие / compacted memory |
+| `/tools`, `/info` | tools / информация о сессии |
+| `/reasoning` | показать/скрыть reasoning |
+| `/export [path]` | экспорт Markdown |
+| `/clear`, `/quit` | очистить экран / выйти |
 
-</details>
+### Markdown
+
+Ответы модели поддерживают headings, **bold**, *italic*, списки, цитаты,
+ссылки, inline code и fenced code blocks. Незавершённая streaming-разметка
+перерисовывается по мере поступления ответа.
 
 ---
 
 ## Конфигурация
 
-Файл создаётся автоматически:
-
 ```text
-~/.tinytcode/config.json            # Windows: %USERPROFILE%\.tinytcode\config.json
+~/.tinytcode/config.json
 ```
 
-<details>
-<summary><b>Полный конфиг по умолчанию</b></summary>
+### llama.cpp
 
 ```json
 {
-  "model": "qwen2.5-coder:7b",
-  "models": {},
-  "ollama": {
-    "baseUrl": "http://127.0.0.1:11434",
-    "timeoutMs": 600000,
-    "keepAlive": "5m",
-    "headers": {},
-    "extraOptions": {},
-    "autoStart": true,
-    "startupTimeoutMs": 20000,
-    "parallel": null
-  },
-  "generation": {
-    "temperature": 0.2,
-    "topP": 0.9,
-    "numCtx": 8192,
-    "numPredict": 2048,
-    "repeatPenalty": 1.05,
-    "seed": null,
-    "stop": [],
-    "thinking": "off",
-    "samplingProfile": "auto"
-  },
-  "context": { "maxMessages": 24, "maxChars": 24000 },
-  "tools": {
-    "enabled": true,
-    "autoApprove": false,
-    "maxIterations": 16,
-    "commandTimeoutMs": 120000,
-    "maxOutputChars": 24000,
-    "promptFile": null,
-    "maxStalledSteps": 3,
-    "profile": "auto",
-    "stopAfterToolCall": false
-  },
-  "compaction": {
-    "enabled": true,
-    "auto": true,
-    "threshold": 0.72,
-    "keepRecentMessages": 6,
-    "minMessages": 10,
-    "maxSummaryChars": 6000,
-    "numPredict": 1024,
-    "promptFile": null
-  },
-  "ui": { "theme": "dark", "showReasoning": true, "showToolOutput": true, "mouse": true },
-  "session": { "autoTitle": true },
-  "mcp": { "enabled": true, "servers": {} }
+  "provider": "llama.cpp",
+  "model": "gemma-4-26b",
+  "llama": {
+    "modelDirs": ["D:/models"],
+    "models": {
+      "gemma-4-26b": "D:/models/gemma-4-26B-A4B-it-Q4_K_M.gguf"
+    },
+    "backend": "auto",
+    "gpuLayers": "auto",
+    "loadMode": "none",
+    "fitTargetMiB": 512,
+    "parallel": 1
+  }
 }
 ```
 
-</details>
+### Goal evaluator override
 
-### Профили моделей и sampling
-
-Выбор в TUI сохраняется в `models[modelId]` и в метаданных сессии. CLI-флаги
-меняют только текущую сессию.
+По умолчанию используется активная модель:
 
 ```json
 {
-  "models": {
-    "hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M": {
-      "thinking": "off",
-      "numCtx": 8192,
-      "sampling": {
-        "profile": "qwen3-fast",
-        "temperature": 0.7,
-        "topP": 0.8,
-        "topK": 20
+  "goal": {
+    "enabled": true,
+    "provider": null,
+    "model": null,
+    "numPredict": 512,
+    "maxContinuations": 3
+  }
+}
+```
+
+`provider` и `model` можно назначить на другой configured provider.
+
+### OpenAI-compatible provider
+
+```json
+{
+  "provider": "local-ai",
+  "providers": {
+    "local-ai": {
+      "type": "openai-compatible",
+      "name": "My Local Server",
+      "baseUrl": "http://127.0.0.1:9000/v1",
+      "apiKeyEnv": "LOCAL_AI_KEY",
+      "headers": {},
+      "extraBody": {},
+      "models": {
+        "coder": {
+          "name": "Coder",
+          "contextLength": 32768,
+          "parameterSize": "14B",
+          "thinking": false
+        }
       }
     }
   }
 }
 ```
 
-Доступные профили: `auto`, `model`, `qwen3-thinking`, `qwen3-fast`, `custom`.
-`model` берёт defaults из `/api/show`, `auto` — рекомендованные Qwen3 presets
-для Off/On, для остальных — объявленные моделью значения. Явные параметры
-`models[id].sampling` перекрывают профиль, а `ollama.extraOptions` применяются
-последними и перекрывают всё остальное.
-
-Уровни thinking не угадываются: только то, что объявила модель. Если Off не
-поддерживается, он недоступен в меню.
-
-### MCP
+Для thinking-модели можно явно задать modes и mapping:
 
 ```json
 {
-  "mcp": {
-    "enabled": true,
-    "servers": {
-      "local": {
-        "enabled": true,
-        "command": "node",
-        "args": ["C:/mcp/server.mjs"],
-        "env": {},
-        "safe": false
-      }
-    }
+  "thinking": {
+    "modes": ["off", "high"],
+    "defaultMode": "off",
+    "field": "reasoning_effort",
+    "values": { "off": "none", "high": "high" }
   }
 }
 ```
 
-Поддерживаются stdio JSON-RPC серверы и их tools. HTTP transports, resources и
-prompts пока нет. `safe: true` отключает approval только для явно доверенного
-сервера.
+Секреты храните в переменных окружения, указанных через `apiKeyEnv`. Для
+удалённого URL prompts, история и tool results покидают локальный компьютер.
 
 ### Переменные окружения
 
 | Переменная | Назначение |
 | --- | --- |
-| `TINYCODE_HOME` | каталог config/history/sessions |
-| `TINYCODE_MODEL` | модель по умолчанию |
+| `TINYCODE_HOME` | каталог config/history/sessions/engines |
+| `TINYCODE_PROVIDER` | provider по умолчанию |
+| `TINYCODE_MODEL` | model id / GGUF path |
+| `TINYCODE_LLAMA_URL` | адрес llama-server |
+| `TINYCODE_LLAMA_EXECUTABLE` | путь к llama-server |
 | `TINYCODE_OLLAMA_URL` / `OLLAMA_HOST` | адрес Ollama |
-| `TINYCODE_PROMPT` | файл системного промта |
-| `TINYCODE_COMPACTION_PROMPT` | промт суммаризатора |
+| `TINYCODE_PROMPT` | системный prompt |
+| `TINYCODE_COMPACTION_PROMPT` | prompt summarizer |
 
 ---
 
-## Модели и железо
+## Производительность
 
-TinyCode создан под небольшие модели и один GPU. Ориентиры для **8 ГБ VRAM**
-(например, RTX 3050), `parallel=1`:
+Пример наблюдаемой generation speed на RTX 3050 8 ГБ, `parallel=1`:
 
-| Модель | Q4 вес | Помещается | Ожидаемо |
-| --- | ---: | --- | --- |
-| Qwen3-8B Q4_K_M | 5.0 ГБ | целиком | ~28 tok/s, рабочий дефолт |
-| Qwen3-14B Q4_K_M | 9.3 ГБ | частично | ~5–10 tok/s, тяжёлые задачи |
-| 27B Q4 | 16–17 ГБ | нет | только удалённый Ollama или 24 ГБ VRAM |
+| Модель | Измеренная скорость |
+| --- | ---: |
+| 7B test build | 70 tok/s |
+| 14B test build | 5 tok/s |
+| Gemma 4 26B A4B | 30 tok/s |
 
-Цифры — ориентиры, а не гарантия: скорость зависит от контекста, кванта и
-свободной VRAM. Большой `num_ctx` увеличивает KV-cache и может вытеснить слои в
-CPU; TinyCode предупредит об этом.
+Это локальные замеры, а не универсальный benchmark. На результат влияют GGUF,
+quant, context, offload, engine build, prompt processing и свободная память.
 
-Практическое правило: **8B Q4 решает однофайловые баги с падающим тестом**,
-14B заметно лучше держит многошаговый план, 27B локально почти не окупается —
-каждый шаг агента занимает минуты. Подробный разбор и замеры:
-[`docs/LOCAL_MODEL_EVALUATION.md`](docs/LOCAL_MODEL_EVALUATION.md).
+Спецификация будущего сравнения TinyCode/OpenCode V2:
+[`docs/BENCHMARK_0.6.md`](docs/BENCHMARK_0.6.md).
 
 ---
 
-## Архитектура
+## Сессии и данные
 
 ```text
-src/
-  cli.ts                     argv, run/resume/compact/models/tools/doctor
-  core/
-    chat.ts                  agent loop, approvals, compaction, abort/retry
-    context.ts               system/user/tool context + trimming
-    compaction.ts            план сжатия, context pressure, fallback summary
-    task-guard.ts            completion / plan / blocked detection
-    ollama-runtime.ts        локальный старт и parallel
-    provider/                Ollama NDJSON, model capabilities, HF workaround
-    prompt/                  agent и compaction prompts
-    session/                 JSONL storage, память, экспорт
-    config/                  defaults, env, persistence, sampling
-    bus.ts                   типизированные события UI
-  tools/
-    registry.ts              реестр, профили и стадии
-    parse.ts                 <tool_call> parser + stream filter
-    file-tools.ts            базовые файловые операции
-    advanced-file-tools.ts   edit/batch/path
-    search-tools.ts          glob и content search
-    patch-tool.ts            checked unified diff
-    verify-tool.ts           детект стека и запуск проверок
-    lsp-tool.ts              LSP diagnostics / syntax fallback
-    process-tools.ts         managed background processes
-    ...
-  mcp/                       клиент локальных stdio-серверов
-  tui/
-    app.ts                   layout, ввод, scroll, approvals
-    logo.ts                  wordmark с градиентом
-    transcript.ts            ordered reasoning/text/tool parts
-    ...
+~/.tinytcode/
+  config.json
+  history.json
+  engines/
+  models/
+  sessions/
+    ses_xxx/
+      meta.json
+      messages.jsonl
 ```
 
-Направление зависимостей: `CLI/TUI → ChatService → Provider / Tools / Session`.
-Ядро не печатает ANSI, поэтому его можно использовать в другом фронтенде.
-
-Подробнее: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+`messages.jsonl` хранит исходную ordered history. `meta.json` содержит provider,
+model, context, goal, queue и compaction cursor. Доступны resume, retry, manual
+compaction и Markdown export.
 
 ---
 
 ## Разработка
 
 ```bash
-npm run typecheck     # tsc --noEmit
-npm run build         # dist/
-npm run smoke         # layout + agent loop + tools
-npm run smoke:tui     # Terminal → KeyParser → TUI → tool → answer
-npm run mock          # mock Ollama на localhost
-npm pack --dry-run    # содержимое npm-пакета
+npm run typecheck
+npm run build
+npm run smoke
+npm run smoke:tui
+npm pack --dry-run
 ```
 
-Smoke-набор детерминированный и не вызывает реальные модели. Он проверяет
-профили и стадии tools, read-before-edit, repair, sampling, обрезку observations,
-`verify`, MCP discovery/call, syntax fallback, approval-диалог, контекст и
-completion guard.
+Smoke tests не скачивают llama.cpp или модели и не запускают реальный inference.
+Они проверяют agent loop, queue, goal review, tools, compaction, provider
+protocols, context lifecycle, OOM/cancel и TUI layout на детерминированных моках.
 
-Реальный прогон на установленной Ollama:
+### Структура
 
-```bash
-node scripts/evaluate-models.mjs <profile> [seconds]
+```text
+src/
+  cli.ts
+  core/
+    chat.ts                       scheduler, queue, goal evaluator
+    context.ts                    full-history context builder
+    compaction.ts                 durable memory/checkpoints
+    engines.ts                    provider/runtime switching
+    llama-runtime.ts              managed llama-server
+    llama-install.ts              verified engine installation
+    model-recommendations.ts      seed hardware catalog
+    provider/
+      llama.ts
+      ollama.ts
+      openai-compatible.ts
+  tools/
+  tui/
 ```
 
-Скрипт создаёт отдельную песочницу и сохраняет запросы, ответы и метрики, не
-трогая ваш конфиг.
+Архитектура подробно описана в
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
 ## Ограничения
 
-- только Ollama, без других провайдеров;
-- текстовый протокол tools вместо native function calling;
-- MCP — только stdio/tools, без HTTP, resources и prompts;
-- LSP требует установленного language server; syntax fallback не заменяет его
-  полностью;
-- нет проектного `.tinycode.json` и syntax highlighting;
-- approval действует до завершения процесса;
-- alternate screen скрывает системный scrollback — используйте колесо,
-  `PgUp/PgDn` или `/export`;
-- harness проверяет действия и запускает проверки, но не доказывает семантическую
-  корректность любого кода.
+- Встроенные managed-движки — llama.cpp и Ollama; остальные endpoints
+  описываются пользователем вручную.
+- Мультимодальный ввод пока не поддерживается.
+- DuckDuckGo no-key search может быть rate-limited.
+- OpenAI-compatible provider не получает автоматическую memory telemetry.
+- MCP поддерживает stdio/tools, но пока не HTTP/resources/prompts.
+- LSP требует установленный language server; fallback не заменяет полный LSP.
+- Нет project-local `.tinycode.json` и syntax highlighting исходников.
+- Commands и MCP работают с правами пользователя, не в sandbox.
+- Goal evaluator повышает надёжность, но остаётся модельной оценкой, а не
+  формальным доказательством корректности.
 
 ---
 
 ## Документация
 
-| Документ | О чём |
+| Документ | Содержание |
 | --- | --- |
-| [`docs/RELEASE_0.5.md`](docs/RELEASE_0.5.md) | что изменилось в 0.5 и что осталось выключенным |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | слои, потоки данных, инварианты |
-| [`docs/LOCAL_MODEL_EVALUATION.md`](docs/LOCAL_MODEL_EVALUATION.md) | замеры на реальных моделях и выводы |
-| [`promt.md`](promt.md) | системный промт агента |
-| [`compact.md`](compact.md) | промт суммаризации сессии |
-
----
+| [`docs/RELEASE_0.6.md`](docs/RELEASE_0.6.md) | изменения 0.6 |
+| [`docs/ROADMAP_0.6.md`](docs/ROADMAP_0.6.md) | согласованный roadmap |
+| [`docs/ENGINES.md`](docs/ENGINES.md) | llama.cpp/Ollama lifecycle |
+| [`docs/BENCHMARK_0.6.md`](docs/BENCHMARK_0.6.md) | план benchmark TinyCode/OpenCode V2 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | слои и инварианты |
+| [`docs/LOCAL_MODEL_EVALUATION.md`](docs/LOCAL_MODEL_EVALUATION.md) | ручные model measurements |
+| [`promt.md`](promt.md) | системный prompt агента |
+| [`compact.md`](compact.md) | prompt compaction |
 
 ## Лицензия
 
-[MIT](LICENSE).
-
-<div align="center">
-
-Сделано для тех, у кого 8 ГБ VRAM и много терпения.
-
-</div>
+[MIT](LICENSE)

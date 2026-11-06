@@ -145,7 +145,7 @@ export function createProcessTools(manager: ProcessManager): Tool[] {
     definition: {
       name: "start_process",
       description:
-        "Start a managed background process such as a dev server. Returns an id for process_status/stop_process. The process is stopped when TinyCode exits.",
+        "Start a managed background command. Requires approval. Returns an id for process_status/stop_process; stopped when TinyCode exits.",
       parameters: {
         type: "object",
         properties: {
@@ -221,7 +221,7 @@ export function createProcessTools(manager: ProcessManager): Tool[] {
         required: ["id"],
         additionalProperties: false,
       },
-      safe: false,
+      safe: true,
       summary: (input) => String(input.id ?? "(process)"),
     },
     async run(input): Promise<ToolResult> {

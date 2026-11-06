@@ -10,6 +10,10 @@ export interface PickerItem {
   label: string;
   detail?: string;
   disabled?: boolean;
+  /** Non-selectable Markdown-like category heading. */
+  heading?: boolean;
+  /** Indent an item under a category heading. */
+  nested?: boolean;
 }
 
 export interface PickerOptions {
@@ -19,6 +23,7 @@ export interface PickerOptions {
   placeholder?: string;
   footer?: string;
   message?: string;
+  messageStyle?: "warning" | "muted";
   showFilter?: boolean;
 }
 
@@ -43,9 +48,12 @@ export class Picker {
   get items(): PickerItem[] {
     const needle = this.filter.trim().toLowerCase();
     if (!needle) return this.options.items;
-    return this.options.items.filter((item) =>
-      `${item.label} ${item.detail ?? ""} ${item.value}`.toLowerCase().includes(needle),
-    );
+    const matches = (item: PickerItem) => !item.heading && `${item.label} ${item.detail ?? ""} ${item.value}`.toLowerCase().includes(needle);
+    return this.options.items.filter((item, index, all) => {
+      if (!item.heading) return matches(item);
+      const next = all.findIndex((candidate, candidateIndex) => candidateIndex > index && candidate.heading);
+      return all.slice(index + 1, next === -1 ? undefined : next).some(matches);
+    });
   }
 
   handleKey(key: Key): PickerResult {
@@ -74,14 +82,14 @@ export class Picker {
     }
     if (key.name === "backspace") {
       this.filter = Array.from(this.filter).slice(0, -1).join("");
-      this.index = 0;
+      this.index = Math.max(0, this.items.findIndex((item) => !item.disabled && !item.heading));
       return { type: "update" };
     }
     if (this.options.showFilter !== false && key.name === "char" && !key.ctrl && !key.alt && key.text !== undefined) {
       const text = key.text.replace(/[\r\n\t]/g, " ");
       if (text) {
         this.filter += text;
-        this.index = 0;
+        this.index = Math.max(0, this.items.findIndex((item) => !item.disabled && !item.heading));
       }
       return { type: "update" };
     }
@@ -94,11 +102,10 @@ export class Picker {
       this.index = 0;
       return;
     }
-    this.index = Math.max(0, Math.min(count - 1, this.index + delta));
-    if (this.items[this.index]?.disabled) {
-      const next = this.index + (delta > 0 ? 1 : -1);
-      if (next >= 0 && next < count) this.index = next;
-    }
+    let next = Math.max(0, Math.min(count - 1, this.index + delta));
+    const step = delta >= 0 ? 1 : -1;
+    while (next >= 0 && next < count && (this.items[next]?.disabled || this.items[next]?.heading)) next += step;
+    if (next >= 0 && next < count) this.index = next;
   }
 }
 
@@ -150,7 +157,7 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
   for (const text of description) {
     rows.push(boxLine([
       { text: "│ ", style: border },
-      ...padLine([{ text, style: { fg: palette.warn } }], boxWidth - 4),
+      ...padLine([{ text, style: picker.options.messageStyle === "muted" ? { fg: palette.muted, italic: true } : { fg: palette.warn } }], boxWidth - 4),
       { text: " │", style: border },
     ], boxWidth, palette));
   }
@@ -201,13 +208,29 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
       const item = items[start + offset];
       if (!item) break;
       const selected = start + offset === picker.index;
-      const marker = selected ? "❯ " : "  ";
-      const available = boxWidth - 4 - 2;
+      if (item.heading) {
+        const label = truncateWidth(sanitizeText(singleLine(item.label)), Math.max(4, innerWidth - 4));
+        const detailLimit = Math.max(0, Math.min(Math.floor(innerWidth * .35), innerWidth - displayWidth(label) - 6));
+        const detail = detailLimit > 3 && item.detail ? truncateWidth(sanitizeText(singleLine(item.detail)), detailLimit) : "";
+        const ruleWidth = Math.max(1, innerWidth - 4 - displayWidth(label) - displayWidth(detail));
+        hits.push({ row: top + rows.length, left: left + 1, right: left + boxWidth - 2, index: start + offset });
+        rows.push(boxLine([
+          { text: "│ ", style: border },
+          { text: "▌ ", style: { fg: palette.accent } },
+          { text: label, style: { fg: palette.text, bold: true } },
+          { text: ` ${"─".repeat(ruleWidth)} `, style: { fg: palette.border, dim: true } },
+          { text: detail, style: { fg: palette.faint, italic: true } },
+          { text: " │", style: border },
+        ], boxWidth, palette));
+        continue;
+      }
+      const marker = item.nested ? selected ? "  ❯ " : "    " : selected ? "❯ " : "  ";
+      const available = boxWidth - 4 - displayWidth(marker);
       const label = truncateWidth(sanitizeText(singleLine(item.label)), available);
       const detailSpace = Math.max(0, available - displayWidth(label) - 2);
       const detail =
         item.detail && detailSpace > 4 ? `  ${truncateWidth(sanitizeText(singleLine(item.detail)), detailSpace)}` : "";
-      const used = 2 + displayWidth(label) + displayWidth(detail);
+      const used = displayWidth(marker) + displayWidth(label) + displayWidth(detail);
       const padding = Math.max(0, boxWidth - 4 - used);
       hits.push({ row: top + rows.length, left: left + 1, right: left + boxWidth - 2, index: start + offset });
       rows.push(

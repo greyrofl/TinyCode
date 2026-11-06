@@ -43,9 +43,9 @@ export function toolExample(tool: ToolDefinition): string {
   return `<tool_call>${JSON.stringify({ name: tool.name, arguments: args })}</tool_call>`;
 }
 
-export function toolRepairHint(tool: ToolDefinition, fragment: string, message: string): string {
+export function toolRepairHint(tool: ToolDefinition, fragment: string, message: string, kind: "Malformed" | "Truncated" = "Malformed"): string {
   return [
-    `Malformed ${tool.name} call: ${message}`,
+    `${kind} ${tool.name} call: ${message}`,
     `Fragment: ${brief(fragment, 240)}`,
     `Schema:\n${toolSignature(tool)}`,
     `Valid example:\n${toolExample(tool)}`,

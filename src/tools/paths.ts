@@ -2,8 +2,8 @@ import path from "node:path";
 import { realpath, stat } from "node:fs/promises";
 
 /**
- * File tools are confined to the session working directory. `execute_command`
- * is the only tool that can reach outside it, and it requires approval.
+ * File tools are confined to the session working directory. Command/script
+ * execution and MCP tools are not sandboxed by these path checks.
  */
 export function resolveInCwd(cwd: string, requested: string): string {
   if (!requested || !requested.trim()) throw new Error("path must not be empty.");

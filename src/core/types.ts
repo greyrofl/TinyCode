@@ -12,6 +12,7 @@ export type StatusState =
   | "thinking"
   | "responding"
   | "tool"
+  | "evaluating"
   | "aborted"
   | "error";
 

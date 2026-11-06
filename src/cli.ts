@@ -7,9 +7,9 @@ import { ChatService } from "./core/chat.js";
 import { loadConfig, saveConfig, type Config } from "./core/config/config.js";
 import { loadCompactionPrompt } from "./core/prompt/compact.js";
 import { loadSystemPrompt, type SystemPromptInfo } from "./core/prompt/system.js";
-import { OllamaProvider } from "./core/provider/ollama.js";
-import { OllamaRuntime } from "./core/ollama-runtime.js";
+import { createLocalEngines, type LocalEngines } from "./core/engines.js";
 import { SessionStore } from "./core/session/store.js";
+import { resolveToolProfile } from "./core/tool-profile.js";
 import { attachMcpTools, type McpConnectionResult } from "./mcp/manager.js";
 import { createDefaultTools, type ToolRegistry } from "./tools/registry.js";
 import type { ToolApprovalRequest } from "./tools/types.js";
@@ -39,7 +39,7 @@ const COMMANDS = new Set([
   "help",
   "version",
 ]);
-const VALUE_FLAGS = new Set(["model", "session", "cwd", "think", "context", "profile"]);
+const VALUE_FLAGS = new Set(["model", "provider", "session", "cwd", "think", "context", "profile"]);
 const SHORT_FLAGS: Record<string, string> = {
   m: "model",
   s: "session",
@@ -131,21 +131,22 @@ Usage
   tinycode run [options] [prompt]    one-shot response (reads stdin when piped)
   tinycode resume [session]          open an existing session (latest by default)
   tinycode compact [session]         compact older turns into durable memory
-  tinycode models [--json]           list models available in Ollama
+  tinycode models [--json]           list models for the selected engine
   tinycode tools [--json]            list agent tools and approval level
   tinycode sessions [--json]         list saved sessions
   tinycode config [--path|--json]    show the config file
-  tinycode doctor                    check Ollama and local state
+  tinycode doctor                    check the selected engine and local state
 
 Options
   -m, --model <name>    model to use for this run
+      --provider <id>   llama.cpp, ollama, or a configured compatible provider
   -s, --session <id>    open a specific session
   -c, --continue        continue the most recent session
-  -y, --yes             auto-approve file writes, deletes and commands
+  -y, --yes             auto-approve commands and restricted MCP tools
       --thinking        stream thinking to stderr in run mode
       --think <mode>    generation mode: off, on, auto, or a supported named level
-      --context <n>     Ollama context size for this session (num_ctx)
-      --profile <name>  tools: auto, plan, edit, or full
+      --context <n>     physical engine context size for this session
+      --profile <name>  tools: auto, plan, edit, full; model restores size-based default
       --cwd <dir>       working directory recorded in the session
       --json            machine-readable output for models/sessions/config
   -h, --help            show this help
@@ -154,6 +155,9 @@ Options
 Environment
   TINYCODE_HOME         state directory (default: ~/.tinytcode)
   TINYCODE_MODEL        default model, overrides the config file
+  TINYCODE_PROVIDER     engine/provider id, overrides the config file
+  TINYCODE_LLAMA_URL    llama-server base URL (default: 127.0.0.1:8081)
+  TINYCODE_LLAMA_EXECUTABLE  installed llama-server binary
   TINYCODE_OLLAMA_URL   Ollama base URL, overrides the config file
   TINYCODE_PROMPT       custom system prompt file
   OLLAMA_HOST           also read when TINYCODE_OLLAMA_URL is not set
@@ -168,22 +172,29 @@ interface Bootstrapped {
   loaded: Awaited<ReturnType<typeof loadConfig>>;
   bus: Bus;
   chat: ChatService;
-  provider: OllamaProvider;
+  provider: LocalEngines;
   store: SessionStore;
   tools: ToolRegistry;
   prompt: SystemPromptInfo;
   compactionPrompt: SystemPromptInfo;
-  runtime: OllamaRuntime;
+  runtime: LocalEngines;
   mcp: McpConnectionResult;
 }
 
 async function bootstrap(parsed: ParsedArgs): Promise<Bootstrapped> {
   const loaded = await loadConfig();
+  const engine = flagValue(parsed, "provider");
+  if (engine) {
+    if (engine !== "llama.cpp" && engine !== "ollama" && !loaded.config.providers[engine]) throw new Error(`Unknown provider: ${engine}. Configure it under providers or use llama.cpp/ollama.`);
+    if (engine !== loaded.config.provider) loaded.config.model = loaded.config.providerModels[engine] ?? "";
+    loaded.config.provider = engine;
+  }
   if (flagBool(parsed, "yes")) loaded.config.tools.autoApprove = true;
   const profile = flagValue(parsed, "profile");
   if (profile) {
-    if (!["auto", "plan", "edit", "full"].includes(profile)) throw new Error(`Unknown tool profile: ${profile}`);
-    loaded.config.tools.profile = profile as Config["tools"]["profile"];
+    if (!["model", "auto", "plan", "edit", "full"].includes(profile)) throw new Error(`Unknown tool profile: ${profile}`);
+    loaded.config.tools.profile = profile === "model" ? "auto" : profile as Config["tools"]["profile"];
+    loaded.config.tools.profileByModel = profile === "model";
   }
 
   const tools = createDefaultTools();
@@ -193,12 +204,7 @@ async function bootstrap(parsed: ParsedArgs): Promise<Bootstrapped> {
   const compactionPrompt = loadCompactionPrompt(loaded.config);
 
   const bus = new Bus();
-  const provider = new OllamaProvider({
-    baseUrl: loaded.config.ollama.baseUrl,
-    timeoutMs: loaded.config.ollama.timeoutMs,
-    keepAlive: loaded.config.ollama.keepAlive,
-    headers: loaded.config.ollama.headers,
-  });
+  const provider = createLocalEngines(loaded.config, cwd, (text) => bus.emit("notice", { text, level: "info" }));
   const store = new SessionStore();
   const chat = new ChatService({
     config: loaded.config,
@@ -210,16 +216,18 @@ async function bootstrap(parsed: ParsedArgs): Promise<Bootstrapped> {
     systemPrompt: prompt.text,
     compactionPrompt: compactionPrompt.text,
   });
-  const runtime = new OllamaRuntime(loaded.config.ollama);
+  const runtime = provider;
   return { loaded, bus, chat, provider, store, tools, prompt, compactionPrompt, runtime, mcp };
 }
 
-async function prepareRuntime(runtime: OllamaRuntime): Promise<void> {
-  if (!(await runtime.available())) process.stderr.write("Connecting to Ollama / starting the local server if allowed…\n");
-  await runtime.ensureStarted();
+async function prepareRuntime(runtime: LocalEngines, signal?: AbortSignal): Promise<void> {
+  if (!(await runtime.available())) process.stderr.write(`Preparing ${runtime.name} / local startup if allowed…\n`);
+  await runtime.ensureStarted(signal);
 }
 
 async function applySessionFlags(chat: ChatService, parsed: ParsedArgs): Promise<void> {
+  const provider = flagValue(parsed, "provider");
+  if (provider && chat.currentProvider !== provider) await chat.setProvider(provider);
   const model = flagValue(parsed, "model");
   if (model && chat.currentModel !== model) await chat.setModel(model);
   const thinking = flagValue(parsed, "think");
@@ -247,7 +255,6 @@ async function runTui(parsed: ParsedArgs, sessionId?: string): Promise<number> {
   const requestedSession = sessionId ?? flagValue(parsed, "session");
 
   try {
-    await prepareRuntime(runtime);
     await chat.initialize({
       sessionId: requestedSession,
       continue: flagBool(parsed, "continue"),
@@ -257,6 +264,7 @@ async function runTui(parsed: ParsedArgs, sessionId?: string): Promise<number> {
     await applySessionFlags(chat, parsed);
   } catch (error) {
     tools.dispose();
+    await runtime.dispose();
     process.stderr.write(`${errorMessage(error)}\n`);
     return 1;
   }
@@ -279,6 +287,8 @@ async function runTui(parsed: ParsedArgs, sessionId?: string): Promise<number> {
     onModelChange: async (model) => {
       loaded.config.model = model;
       loaded.fileConfig.model = model;
+      loaded.fileConfig.provider = loaded.config.provider;
+      loaded.fileConfig.providerModels[loaded.config.provider] = model;
       await saveConfig(loaded.fileConfig);
     },
   });
@@ -286,6 +296,7 @@ async function runTui(parsed: ParsedArgs, sessionId?: string): Promise<number> {
     await tui.run();
   } finally {
     tools.dispose();
+    await runtime.dispose();
   }
   return 0;
 }
@@ -301,7 +312,6 @@ async function runOnce(parsed: ParsedArgs): Promise<number> {
   const { loaded, bus, chat, tools, runtime } = await bootstrap(parsed);
   const cwd = resolveCwd(parsed);
   try {
-    await prepareRuntime(runtime);
     await chat.initialize({
       sessionId: flagValue(parsed, "session"),
       continue: flagBool(parsed, "continue"),
@@ -311,10 +321,11 @@ async function runOnce(parsed: ParsedArgs): Promise<number> {
     await applySessionFlags(chat, parsed);
     const parallel = await runtime.parallelStatus();
     if (parallel.local && parallel.value !== null && parallel.value !== 1) {
-      process.stderr.write(`Warning: Ollama parallel=${parallel.value}; use 1 for a single coding agent (TUI: /parallel).\n`);
+      process.stderr.write(`Warning: ${runtime.name} parallel=${parallel.value}; use 1 for a single coding agent (TUI: /parallel).\n`);
     }
   } catch (error) {
     tools.dispose();
+    await runtime.dispose();
     process.stderr.write(`${errorMessage(error)}\n`);
     return 1;
   }
@@ -326,7 +337,7 @@ async function runOnce(parsed: ParsedArgs): Promise<number> {
       if (!warnedApproval) {
         warnedApproval = true;
         process.stderr.write(
-          "\nTool approval required. Re-run with --yes to allow file writes, deletes and commands.\n",
+          `\nApproval required for ${request.tool}. Re-run with --yes to allow commands and restricted MCP tools.\n`,
         );
       }
       return false;
@@ -382,11 +393,16 @@ async function runOnce(parsed: ParsedArgs): Promise<number> {
       lastChunk = delta;
     }
   });
-  const onSigint = (): void => chat.abort();
+  const unsubscribeNotices = bus.on("notice", ({ text }) => process.stderr.write(`${text}\n`));
+  const onSigint = (): void => chat.abort(true);
   process.once("SIGINT", onSigint);
 
   try {
-    await chat.send(prompt);
+    await chat.send(prompt, async (signal) => {
+      if (!chat.currentModel) throw new Error("Select a model first: tinycode --provider llama.cpp --model <path.gguf>, or use /models in the TUI. No weights are downloaded automatically.");
+      await prepareRuntime(runtime, signal);
+      if (chat.currentProvider === "llama.cpp") await chat.loadCurrentModel(signal, chat.contextLimit);
+    });
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n`);
     return 1;
@@ -395,7 +411,9 @@ async function runOnce(parsed: ParsedArgs): Promise<number> {
     unsubscribe();
     unsubscribeThinking();
     unsubscribeTools();
+    unsubscribeNotices();
     tools.dispose();
+    await runtime.dispose();
   }
 
   const messages = chat.current?.messages ?? [];
@@ -434,14 +452,16 @@ function printTable(headers: string[], rows: string[][]): void {
 }
 
 async function listModels(parsed: ParsedArgs): Promise<number> {
-  const { loaded, provider, runtime } = await bootstrap(parsed);
+  const { loaded, provider, runtime, tools } = await bootstrap(parsed);
   let models;
   try {
-    await prepareRuntime(runtime);
+    if (provider.id === "ollama") await prepareRuntime(runtime);
     models = await provider.listModels();
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n`);
     return 1;
+  } finally {
+    tools.dispose(); await runtime.dispose();
   }
 
   if (flagBool(parsed, "json")) {
@@ -450,7 +470,9 @@ async function listModels(parsed: ParsedArgs): Promise<number> {
   }
 
   if (models.length === 0) {
-    process.stdout.write("No models found. Pull one first, for example:\n  ollama pull qwen2.5-coder:7b\n");
+    process.stdout.write(provider.id === "llama.cpp"
+      ? "No local GGUFs found. Put a model in ~/.tinytcode/models, configure llama.modelDirs, or use --model <path.gguf>. Weights are not downloaded automatically.\n"
+      : "No models found. Pull one first, for example:\n  ollama pull qwen2.5-coder:7b\n");
     return 0;
   }
 
@@ -517,17 +539,18 @@ async function listSessions(parsed: ParsedArgs): Promise<number> {
 }
 
 async function compactSessionCommand(parsed: ParsedArgs): Promise<number> {
-  const { chat, runtime } = await bootstrap(parsed);
+  const { chat, runtime, tools } = await bootstrap(parsed);
   const requested = parsed.positionals[0] ?? flagValue(parsed, "session");
   const sessionId = requested ?? (await chat.listSessions())[0]?.id;
   if (!sessionId) {
     process.stderr.write("No saved sessions to compact.\n");
+    tools.dispose(); await runtime.dispose();
     return 1;
   }
   try {
-    await prepareRuntime(runtime);
     await chat.initialize({ sessionId, cwd: resolveCwd(parsed) });
     await applySessionFlags(chat, parsed);
+    await prepareRuntime(runtime);
     const result = await chat.compact();
     if (flagBool(parsed, "json")) {
       process.stdout.write(`${JSON.stringify({ sessionId, ...result }, null, 2)}\n`);
@@ -542,6 +565,8 @@ async function compactSessionCommand(parsed: ParsedArgs): Promise<number> {
   } catch (error) {
     process.stderr.write(`Compaction failed: ${errorMessage(error)}\n`);
     return 1;
+  } finally {
+    tools.dispose(); await runtime.dispose();
   }
 }
 
@@ -561,31 +586,34 @@ async function showConfig(parsed: ParsedArgs): Promise<number> {
 }
 
 async function doctor(parsed: ParsedArgs): Promise<number> {
-  void parsed;
   const loaded = await loadConfig();
-  const provider = new OllamaProvider({
-    baseUrl: loaded.config.ollama.baseUrl,
-    timeoutMs: loaded.config.ollama.timeoutMs,
-    keepAlive: loaded.config.ollama.keepAlive,
-    headers: loaded.config.ollama.headers,
-  });
+  const engine = flagValue(parsed, "provider");
+  if (engine) {
+    if (engine !== "llama.cpp" && engine !== "ollama" && !loaded.config.providers[engine]) throw new Error("Unknown provider. Configure it under providers or use llama.cpp/ollama.");
+    if (engine !== loaded.config.provider) loaded.config.model = loaded.config.providerModels[engine] ?? "";
+    loaded.config.provider = engine;
+  }
+  const provider = createLocalEngines(loaded.config, resolveCwd(parsed));
   const health = await provider.health();
   const tools = createDefaultTools();
   const prompt = loadSystemPrompt(tools.definitions(), loaded.config);
   const compactPrompt = loadCompactionPrompt(loaded.config);
-  const parallel = await new OllamaRuntime(loaded.config.ollama).parallelStatus();
+  const parallel = await provider.parallelStatus();
   const lines: string[] = [
     `tinycode  ${version()}`,
     `node      ${process.version} (${process.platform}/${process.arch})`,
     `config    ${shortPath(loaded.path)}${loaded.created ? " (created)" : ""}`,
     `sessions  ${shortPath(sessionsDir())}`,
-    `ollama    ${loaded.config.ollama.baseUrl}`,
-    `autostart ${loaded.config.ollama.autoStart ? "enabled (local only)" : "disabled"}`,
+    `engine    ${provider.name}`,
+    `server    ${provider.id === "llama.cpp" ? loaded.config.llama.baseUrl : provider.id === "ollama" ? loaded.config.ollama.baseUrl : loaded.config.providers[provider.id]?.baseUrl ?? "unknown"}`,
+    provider.id === "llama.cpp" ? `autoinstall ${loaded.config.llama.autoInstall ? "verified official binaries on first load" : "disabled"}`
+      : provider.id === "ollama" ? `autostart ${loaded.config.ollama.autoStart ? "enabled (local only)" : "disabled"}`
+        : "runtime   user-owned external API",
     `parallel  ${parallel.value ?? "unknown"} · ${parallel.source}`,
     `tools     ${tools.size}${loaded.config.tools.enabled ? "" : " (disabled)"} · approval ${
       loaded.config.tools.autoApprove ? "auto" : "ask"
     }`,
-    `profile   ${loaded.config.tools.profile}`,
+    `profile   ${resolveToolProfile(loaded.config, loaded.config.model)}`,
     `mcp       ${Object.values(loaded.config.mcp.servers).filter((server) => server.enabled).length} configured`,
     `prompt    ${prompt.usedFallback ? "built-in fallback" : shortPath(prompt.source)}`,
     `compact   ${loaded.config.compaction.enabled ? `${loaded.config.compaction.auto ? "auto" : "manual"} · ${(loaded.config.compaction.threshold * 100).toFixed(0)}%` : "disabled"} · ${compactPrompt.usedFallback ? "built-in prompt" : shortPath(compactPrompt.source)}`,
@@ -593,13 +621,13 @@ async function doctor(parsed: ParsedArgs): Promise<number> {
 
   let code = 0;
   if (health.ok) {
-    lines.push(`status    ok${health.version ? ` (Ollama ${health.version})` : ""}`);
+    lines.push(`status    ok${health.version ? ` (${provider.name} ${health.version})` : ""}`);
     try {
       await ensureDir(sessionsDir());
       const models = await provider.listModels();
       lines.push(`models    ${models.length}`);
       const hasDefault = models.some((model) => model.id === loaded.config.model);
-      lines.push(`default   ${loaded.config.model}${hasDefault ? "" : " (not pulled)"}`);
+      lines.push(`default   ${loaded.config.model || "not selected"}${hasDefault ? "" : " (not in model list)"}`);
       if (!hasDefault) code = 1;
     } catch (error) {
       lines.push(`models    failed: ${errorMessage(error)}`);
@@ -612,6 +640,7 @@ async function doctor(parsed: ParsedArgs): Promise<number> {
   }
 
   process.stdout.write(`${lines.join("\n")}\n`);
+  tools.dispose(); await provider.dispose();
   return code;
 }
 

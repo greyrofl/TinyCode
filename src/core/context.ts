@@ -1,61 +1,18 @@
 import type { ChatMessage } from "./provider/types.js";
 import type { Message, ToolPart } from "./session/types.js";
-import { textOf, toolPartsOf } from "./session/types.js";
+import { textOf } from "./session/types.js";
 
 export interface ContextOptions {
+  /** Legacy setting; history is no longer selected by message count. */
   maxMessages: number;
+  /** Optional explicit character budget; zero disables this legacy bound. */
   maxChars: number;
+  /** Input token budget, including the system prompt. */
+  maxTokens?: number;
 }
 
-function messageSize(message: Message): number {
-  let size = textOf(message).length;
-  for (const part of message.parts) {
-    if (part.type !== "tool") continue;
-    size += JSON.stringify(part.input).length;
-    size += part.output?.length ?? 0;
-    size += part.error?.length ?? 0;
-  }
-  return size;
-}
-
-function selectMessages(messages: Message[], options: ContextOptions): Message[] {
-  const candidates = messages.filter(
-    (message) =>
-      !message.error &&
-      !message.aborted &&
-      (textOf(message).trim().length > 0 || toolPartsOf(message).length > 0),
-  );
-
-  let lastUser = -1;
-  for (let index = 0; index < candidates.length; index++) {
-    if (candidates[index]!.role === "user") lastUser = index;
-  }
-
-  let start = candidates.length;
-  let characters = 0;
-  for (let index = candidates.length - 1; index >= 0; index--) {
-    const message = candidates[index]!;
-    const selected = candidates.length - start;
-    const size = messageSize(message);
-    if (start < candidates.length && (selected >= options.maxMessages || characters + size > options.maxChars)) {
-      break;
-    }
-    start = index;
-    characters += size;
-  }
-
-  // Always keep the newest user turn, even if an agent loop made it long.
-  if (lastUser >= 0) start = Math.min(start, lastUser);
-  return candidates.slice(start);
-}
-
-function headTail(text: string, head = 5_000, tail = 2_000): string {
-  if (text.length <= head + tail) return text;
-  return `${text.slice(0, head)}\n… ${text.length - head - tail} chars omitted; tail follows …\n${text.slice(-tail)}`;
-}
-
-function observationFor(part: ToolPart, latest: boolean): string {
-  const value = latest ? part.output ?? part.error ?? "(no output)" : headTail(part.output ?? part.error ?? "(no output)");
+function observationFor(part: ToolPart): string {
+  const value = part.output ?? part.error ?? "(no output)";
   switch (part.status) {
     case "completed":
       return `[Observation: ${value}]`;
@@ -72,7 +29,7 @@ function observationFor(part: ToolPart, latest: boolean): string {
  * Reconstruct the text-protocol conversation, including tool calls and their
  * observations. Reasoning is intentionally not sent back to the model.
  */
-function expandMessage(message: Message, latestCallId?: string): ChatMessage[] {
+function expandMessage(message: Message): ChatMessage[] {
   if (message.role === "user") {
     const text = textOf(message).trim();
     return text ? [{ role: "user", content: text }] : [];
@@ -89,15 +46,23 @@ function expandMessage(message: Message, latestCallId?: string): ChatMessage[] {
   for (const part of message.parts) {
     if (part.type === "text") {
       buffer += (buffer ? "\n" : "") + part.text;
+    } else if (part.type === "steering") {
+      flush();
+      if (part.text.trim()) out.push({ role: "user", content: part.text.trim() });
+    } else if (part.type === "goal_review") {
+      flush();
+      if (part.verdict === "continue") out.push({ role: "user", content: `[Goal evaluator — continue_work]\n${part.text.trim()}` });
     } else if (part.type === "tool") {
       if (!part.synthetic) {
         const call = `<tool_call>${JSON.stringify({ name: part.tool, arguments: part.input })}</tool_call>`;
         buffer += (buffer ? "\n" : "") + call;
       }
       flush();
-      out.push({ role: "user", content: observationFor(part, part.callId === latestCallId) });
+      out.push({ role: "user", content: observationFor(part) });
     }
   }
+  if (message.error) buffer += `\n[Previous turn error: ${message.error}]`;
+  if (message.aborted) buffer += "\n[Previous turn was aborted; unfinished actions are not completed.]";
   flush();
   return out;
 }
@@ -115,60 +80,47 @@ function mergeConsecutive(messages: ChatMessage[]): ChatMessage[] {
   return out;
 }
 
-function truncateContent(content: string, max: number): string {
-  if (content.length <= max) return content;
-  if (max <= 40) return content.slice(0, Math.max(0, max));
-  const head = Math.max(20, Math.floor((max - 50) * 0.72));
-  const tail = Math.max(10, max - head - 50);
-  return `${content.slice(0, head)}\n… context entry truncated …\n${content.slice(-tail)}`;
+/** Approximate input tokens, accounting for UTF-8 text and message framing. */
+export function estimateContextTokens(messages: ChatMessage[]): number {
+  return messages.reduce((sum, message) => sum + Math.ceil(Buffer.byteLength(message.content, "utf8") / 4) + 8, 3);
 }
 
-/** Keep the current user request plus the newest agent/tool exchange. */
-function trimExpanded(messages: ChatMessage[], maxChars: number): ChatMessage[] {
-  const system = messages.filter((message) => message.role === "system");
-  const body = messages.filter((message) => message.role !== "system");
-  const total = body.reduce((sum, message) => sum + message.content.length, 0);
-  if (total <= maxChars || body.length === 0) return messages;
-
-  const first = { ...body[0]! };
-  const firstBudget = Math.max(256, Math.floor(maxChars * 0.25));
-  first.content = truncateContent(first.content, firstBudget);
-  let remaining = Math.max(0, maxChars - first.content.length);
-  const tail: ChatMessage[] = [];
-
-  for (let index = body.length - 1; index >= 1 && remaining > 0; index--) {
-    const message = body[index]!;
-    const content = truncateContent(message.content, remaining);
-    tail.unshift({ ...message, content });
-    remaining -= content.length;
+export class ContextOverflowError extends Error {
+  constructor(detail: string) {
+    super(`History exceeds the selected context budget (${detail}). No messages were discarded. Enable automatic compaction, use /compact or a larger /context, reduce generation.numPredict, or request a smaller tool output.`);
+    this.name = "ContextOverflowError";
   }
-
-  return [...system, first, ...tail];
 }
 
 /**
- * Build the Ollama message list. The system prompt is injected by the caller;
- * no prompt is invented here. Small-model context trimming stays in this
- * module so every frontend gets the same behaviour.
+ * Reconstruct all uncompacted history without selection or truncation.
+ * Raw reasoning stays in the transcript, not in model input.
  */
-export function buildContext(
+export function expandContext(
   messages: Message[],
-  options: ContextOptions,
   systemPrompt?: string,
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
   if (systemPrompt?.trim()) out.push({ role: "system", content: systemPrompt.trim() });
 
-  const selected = selectMessages(messages, options);
-  const latestCallId = [...selected].reverse().flatMap((message) => [...toolPartsOf(message)].reverse())
-    .find((part) => ["completed", "error", "denied"].includes(part.status))?.callId;
-  for (const message of selected) {
-    out.push(...expandMessage(message, latestCallId));
-  }
+  for (const message of messages) out.push(...expandMessage(message));
+  return mergeConsecutive(out);
+}
 
-  const firstConversationIndex = out[0]?.role === "system" ? 1 : 0;
-  while (out[firstConversationIndex]?.role === "assistant") {
-    out.splice(firstConversationIndex, 1);
+/** Refuse overflow rather than silently omitting any part of the conversation. */
+export function buildContext(
+  messages: Message[],
+  options: ContextOptions,
+  systemPrompt?: string,
+): ChatMessage[] {
+  const out = expandContext(messages, systemPrompt);
+  const bodyChars = out.filter((message) => message.role !== "system").reduce((sum, message) => sum + message.content.length, 0);
+  if (options.maxChars > 0 && bodyChars > options.maxChars) {
+    throw new ContextOverflowError(`${bodyChars} characters > ${options.maxChars}`);
   }
-  return mergeConsecutive(trimExpanded(out, options.maxChars));
+  const tokens = estimateContextTokens(out);
+  if (options.maxTokens !== undefined && tokens > options.maxTokens) {
+    throw new ContextOverflowError(`approximately ${tokens} input tokens > ${Math.max(0, options.maxTokens)}`);
+  }
+  return out;
 }
