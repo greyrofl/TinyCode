@@ -55,13 +55,13 @@ export async function workspaceStamp(cwd: string): Promise<string | null> {
 
 export function isVerificationCommand(command: string): boolean {
   if (/[|;\r\n]|(?<!&)&(?!&)/.test(command)) return false;
-  return /(?:^|&&\s*)(?:npm\s+(?:test\b|run\s+(?:test|build|check|typecheck|lint)\b)|pnpm\s+(?:run\s+)?(?:test|build|check|typecheck|lint)\b|yarn\s+(?:run\s+)?(?:test|build|check|typecheck|lint)\b|node\s+--(?:test|check)\b|npx\s+(?:tsc|vitest|jest)\b|pytest\b|python\s+-m\s+(?:pytest|unittest|compileall)\b|cargo\s+(?:test|check|build)\b|go\s+test\b|dotnet\s+(?:test|build)\b|cmake\s+--build\b|mvn\s+test\b|ctest\b)/i.test(command.trim());
+  return /(?:^|&&\s*)(?:npm\s+(?:test\b|run\s+(?:test|build|check|typecheck|lint)\b)|pnpm\s+(?:run\s+)?(?:test|build|check|typecheck|lint)\b|yarn\s+(?:run\s+)?(?:test|build|check|typecheck|lint)\b|node\s+(?:--experimental-strip-types\s+)?--(?:test|check)\b|npx\s+(?:tsc|vitest|jest)\b|pytest\b|python\s+-m\s+(?:pytest|unittest|compileall)\b|cargo\s+(?:test|check|build)\b|go\s+test\b|dotnet\s+(?:test|build)\b|cmake\s+--build\b|mvn\s+test\b|ctest\b)/i.test(command.trim());
 }
 
 export function verificationKinds(command: string): Set<string> {
   const kinds = new Set<string>();
   if (!isVerificationCommand(command)) return kinds;
-  if (/(?:npm\s+(?:test|run\s+test)\b|(?:pnpm|yarn)\s+(?:test|run\s+test)\b|node\s+--test\b|npx\s+(?:vitest|jest)\b|pytest\b|python\s+-m\s+(?:pytest|unittest)\b|cargo\s+test\b|go\s+test\b|dotnet\s+test\b|mvn\s+test\b|ctest\b)/i.test(command)) kinds.add("test");
+  if (/(?:npm\s+(?:test|run\s+test)\b|(?:pnpm|yarn)\s+(?:test|run\s+test)\b|node\s+(?:--experimental-strip-types\s+)?--test\b|npx\s+(?:vitest|jest)\b|pytest\b|python\s+-m\s+(?:pytest|unittest)\b|cargo\s+test\b|go\s+test\b|dotnet\s+test\b|mvn\s+test\b|ctest\b)/i.test(command)) kinds.add("test");
   if (/(?:npm\s+run\s+build\b|(?:pnpm|yarn)\s+(?:run\s+)?build\b|cargo\s+build\b|cmake\s+--build\b|dotnet\s+build\b)/i.test(command)) kinds.add("build");
   kinds.add("check");
   return kinds;

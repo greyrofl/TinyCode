@@ -279,12 +279,19 @@ export class ChatService {
   }
 
   get currentInferenceDraftModel(): string | null {
+    if (this.provider.id !== "llama.cpp" || this.modelDetailsCache.get(this.currentModel ?? "")?.mtp?.mode === "embedded") return null;
     return this.modelPreference?.inference?.draftModel ?? this.config.llama.speculativeDraftModel;
   }
 
   private inferenceOptions() {
     if (this.provider.id !== "llama.cpp") return undefined;
-    return inferenceRuntimeOptions(this.currentInferenceProfile, this.config.llama, this.currentInferenceDraftModel ?? undefined);
+    const embedded = this.modelDetailsCache.get(this.currentModel ?? "")?.mtp?.mode === "embedded";
+    const defaults = embedded ? { ...this.config.llama, speculativeMtpMode: "embedded" as const } : this.config.llama;
+    // The global low-level configuration is also the benchmark interface. Its
+    // arbitrary depth must not be rounded to the nearest interactive preset.
+    const draftMax = !this.modelPreference?.inference && this.config.llama.speculativeType === "draft-mtp"
+      ? this.config.llama.speculativeDraftMax : undefined;
+    return inferenceRuntimeOptions(this.currentInferenceProfile, defaults, this.currentInferenceDraftModel ?? undefined, draftMax);
   }
 
   get contextLimit(): number {
@@ -503,18 +510,21 @@ export class ChatService {
     return this.provider.listModels();
   }
 
-  async inferenceSupport(): Promise<{ direct: boolean; mtp: boolean; draftModel: string | null; note?: string }> {
+  async inferenceSupport(): Promise<{ direct: boolean; mtp: boolean; mode?: "embedded" | "sidecar"; draftModel: string | null; note?: string }> {
     if (this.provider.id !== "llama.cpp") {
       return { direct: false, mtp: false, draftModel: null, note: "Inference profiles require TinyCode-managed llama.cpp." };
     }
     const details = await this.getModelDetails();
     const target = `${details.family ?? ""} ${details.name} ${details.id}`;
-    const mtp = /gemma/i.test(target);
+    const embedded = details.mtp?.mode === "embedded";
+    const mtp = embedded || /gemma/i.test(target);
     return {
       direct: true,
       mtp,
+      ...(mtp ? { mode: embedded ? "embedded" as const : "sidecar" as const } : {}),
       draftModel: this.currentInferenceDraftModel,
-      ...(!mtp ? { note: "MTP presets in TinyCode 0.7 are restricted to compatible Gemma targets; N-gram remains available." } : {}),
+      ...(embedded ? { note: "MTP is embedded in this GGUF; no sidecar is needed. Start with depth 2, parallel=1 and no vision projector." }
+        : !mtp ? { note: "MTP needs an embedded head in GGUF metadata or a compatible Gemma sidecar; N-gram remains available." } : {}),
     };
   }
 
@@ -608,11 +618,15 @@ export class ChatService {
     if (this.busy) throw new Error("Cannot change inference profile during generation.");
     if (!isInferenceProfile(profile)) throw new Error("Inference profile must be standard, ngram, mtp-2, mtp-3, mtp-6, or mtp-8.");
     if (this.provider.id !== "llama.cpp" && profile !== "standard") throw new Error("Speculative inference profiles require the direct llama.cpp provider.");
+    const selectedSession = this.requireSession();
+    const selectedModel = this.currentModel;
     if (isMtpProfile(profile)) {
       const support = await this.inferenceSupport();
       if (!support.mtp) throw new Error(support.note ?? "This target model is not compatible with TinyCode's Gemma MTP presets.");
-      if (!(draftModel?.trim() || this.currentInferenceDraftModel)) throw new Error("MTP needs a local draft sidecar GGUF. Pass it after the profile or configure llama.speculativeDraftModel; TinyCode never downloads weights.");
+      if (support.mode === "embedded" && draftModel?.trim()) throw new Error("This target already contains MTP weights. Do not select a separate draft sidecar.");
+      if (support.mode !== "embedded" && !(draftModel?.trim() || this.currentInferenceDraftModel)) throw new Error("MTP needs a local draft sidecar GGUF. Pass it after the profile or configure llama.speculativeDraftModel; TinyCode never downloads weights.");
     }
+    if (this.busy || this.session !== selectedSession || this.currentModel !== selectedModel) throw new Error("Model/session changed during inference setup. Reopen /inference when the session is idle.");
     const session = this.requireSession();
     session.meta.inferenceProfile = profile;
     delete session.meta.lastContext;
@@ -622,7 +636,8 @@ export class ChatService {
       thinking: this.currentThinking,
       numCtx: this.contextLimit,
     };
-    const selectedDraft = draftModel?.trim() || existing.inference?.draftModel || this.config.llama.speculativeDraftModel || undefined;
+    const embedded = this.modelDetailsCache.get(this.currentModel ?? "")?.mtp?.mode === "embedded";
+    const selectedDraft = embedded ? undefined : draftModel?.trim() || existing.inference?.draftModel || this.config.llama.speculativeDraftModel || undefined;
     // Keep the compatible sidecar association while Standard/N-gram is active
     // so switching back to MTP does not ask for the same local file again.
     existing.inference = { profile, ...(selectedDraft ? { draftModel: selectedDraft } : {}) };
@@ -1783,7 +1798,7 @@ export class ChatService {
           break;
         }
 
-        const parsed = parseToolCalls(turn.text);
+        const parsed = parseToolCalls(turn.text, this.toolDefinitions);
         if (parsed.errors.length > 0) {
           const limited = turn.stopReason === "length" || turn.outputTokens >= turn.outputLimit;
           const truncated = limited ? parsed.issues.find((issue) => issue.kind === "incomplete" &&

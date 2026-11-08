@@ -105,8 +105,9 @@ export class LlamaProvider implements Provider {
       ? { chat_template_kwargs: { enable_thinking: false, enable_reasoning: false }, reasoning_effort: "none" }
       : options.think === true ? { chat_template_kwargs: { enable_thinking: true, enable_reasoning: true } }
         : typeof options.think === "string" ? { reasoning_effort: options.think } : {};
+    const toolOptions = options.tools?.length ? { tools: options.tools, parallel_tool_calls: false } : {};
     // Count the whole templated history with this model's own tokenizer, never trim it.
-    const template = await (await this.runtime.request("/apply-template", { messages: options.messages, ...thinking }, options.signal, options.timeoutMs)).json() as { prompt?: string };
+    const template = await (await this.runtime.request("/apply-template", { messages: options.messages, ...thinking, ...toolOptions }, options.signal, options.timeoutMs)).json() as { prompt?: string };
     if (typeof template.prompt !== "string") throw new Error("llama.cpp /apply-template did not return a prompt. No generation was sent.");
     const tokens = await (await this.runtime.request("/tokenize", { content: template.prompt, add_special: true, parse_special: true }, options.signal, options.timeoutMs)).json() as { tokens?: unknown[] };
     if (!Array.isArray(tokens.tokens)) throw new Error("llama.cpp /tokenize did not return token counts. No generation was sent.");
@@ -117,7 +118,7 @@ export class LlamaProvider implements Provider {
       ...sampling, ...thinking, model: this.runtime.apiModel || options.model, messages: options.messages,
       stream: true, stream_options: { include_usage: true }, max_tokens: outputLimit,
       cache_prompt: true, n_keep: -1, context_shift: false, reasoning_format: "deepseek",
-      ...(options.tools?.length ? { tools: options.tools, parallel_tool_calls: false } : {}),
+      ...toolOptions,
     }, options.signal, options.timeoutMs);
     if (!response.body) throw new Error("llama.cpp returned an empty stream.");
     const reader = response.body.getReader();

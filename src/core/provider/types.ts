@@ -40,6 +40,8 @@ export interface ModelInfo {
   modifiedAt?: string;
   /** Draft sidecars are discoverable for inference setup, not main model selection. */
   role?: "target" | "draft";
+  /** Discovered from GGUF metadata, never inferred from a repository name. */
+  mtp?: { mode: "embedded" | "sidecar"; layers?: number };
 }
 
 export interface ChatMessage {
@@ -71,6 +73,8 @@ export interface RunningModelInfo {
   /** False when an external server does not expose physical allocation telemetry. */
   memoryKnown?: boolean;
   inferenceProfile?: InferenceRuntimeOptions["profile"];
+  inferenceMtpMode?: "embedded" | "sidecar";
+  inferenceDraftMax?: number;
 }
 
 export interface LoadModelOptions {

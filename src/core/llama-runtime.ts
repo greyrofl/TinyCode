@@ -120,6 +120,7 @@ export class LlamaRuntime implements LocalRuntime {
     const inference = options.inference ?? {
       profile: inferenceProfileFromSpeculative(this.config.speculativeType, this.config.speculativeDraftMax),
       speculativeType: this.config.speculativeType,
+      mtpMode: this.config.speculativeMtpMode,
       ...(this.config.speculativeDraftModel ? { draftModel: this.config.speculativeDraftModel } : {}),
       draftDevice: this.config.speculativeDraftDevice,
       draftMax: this.config.speculativeDraftMax,
@@ -145,22 +146,22 @@ export class LlamaRuntime implements LocalRuntime {
       }
       if (!this.owned || this.runningInferenceSignature === inferenceSignature) return existing;
     }
-    if (inference.speculativeType === "draft-mtp" && !inference.draftModel) {
-      throw new Error("An MTP inference profile requires a local draft sidecar GGUF.");
-    }
     if (await this.available() && !this.owned) throw new Error("An external llama-server is already running on the configured port with a different model/context. TinyCode will not stop it. Use its exact context or a separate local port.");
-    const [file, details, draftFile] = await Promise.all([
+    const [file, details] = await Promise.all([
       this.catalog.resolve(options.model),
       this.catalog.getDetails(options.model),
-      inference.speculativeType === "draft-mtp" && inference.draftModel ? this.catalog.resolve(inference.draftModel) : Promise.resolve(null),
     ]);
+    const mtp = inference.speculativeType === "draft-mtp";
+    const embedded = mtp && (inference.mtpMode === "embedded" ||
+      (inference.mtpMode ?? "auto") === "auto" && details.mtp?.mode === "embedded");
+    if (mtp && inference.mtpMode === "sidecar" && details.mtp?.mode === "embedded") throw new Error("This GGUF already contains an MTP head. Use embedded MTP instead of attaching a sidecar.");
+    if (embedded && details.mtp?.mode !== "embedded") throw new Error("The selected GGUF has no embedded MTP head (nextn_predict_layers). Use an MTP-enabled target file, not the ordinary quant.");
+    if (mtp && !embedded && !inference.draftModel) throw new Error("An MTP inference profile requires an embedded GGUF head or a local draft sidecar GGUF.");
+    if (embedded && this.config.parallel !== 1) throw new Error("Embedded Qwen MTP requires llama.parallel=1. No replacement model was loaded.");
+    if (embedded && inference.draftDevice !== "auto") throw new Error("Embedded MTP shares the target's weights and placement. Set speculativeDraftDevice to auto instead of selecting a separate CPU draft device.");
+    if (mtp && (!Number.isInteger(inference.draftMax) || inference.draftMax < 1 || inference.draftMax > 16)) throw new Error("MTP draft depth must be an integer from 1 to 16.");
+    const draftFile = mtp && !embedded ? await this.catalog.resolve(inference.draftModel!) : null;
     if (options.numCtx > (details.contextLength ?? 1_048_576)) throw new Error(`GGUF context limit is ${details.contextLength} tokens.`);
-    if (this.child) {
-      const before = await this.memoryStatus();
-      const released = this.running?.sizeVramBytes ?? 0;
-      await this.stopChild();
-      await this.waitForMemoryRelease(before, released, options.signal);
-    }
     if (!localRuntimeUrl(this.baseUrl)) throw new Error("A remote llama.cpp model must be loaded by its owner.");
     const executable = await this.installer.ensure(options.signal);
     let help = this.helpCache.get(executable);
@@ -176,8 +177,18 @@ export class LlamaRuntime implements LocalRuntime {
     if (inference.speculativeType !== "none" && !help.includes("--spec-type")) {
       throw new Error(`Installed llama-server does not support inference profile ${inference.profile}. Update llama.cpp or select Standard.`);
     }
-    if (inference.speculativeType === "draft-mtp" && !help.includes("--spec-draft-model")) {
+    if (mtp && !embedded && !help.includes("--spec-draft-model")) {
       throw new Error("Installed llama-server does not support MTP draft models. Update llama.cpp or select Standard.");
+    }
+    if (mtp && ["--spec-draft-n-max", "--spec-draft-type-k", "--spec-draft-type-v"].some((flag) => !help.includes(flag))) {
+      throw new Error("Installed llama-server does not support the requested MTP depth/KV options. Update llama.cpp or select Standard.");
+    }
+    // Validate metadata and flags before releasing a working owned runner.
+    if (this.child) {
+      const before = await this.memoryStatus();
+      const released = this.running?.sizeVramBytes ?? 0;
+      await this.stopChild();
+      await this.waitForMemoryRelease(before, released, options.signal);
     }
     await (this.dependencies.checkPort ?? (() => checkPort(this.baseUrl)))();
     options.signal?.throwIfAborted();
@@ -196,11 +207,11 @@ export class LlamaRuntime implements LocalRuntime {
       ...(this.config.threads > 0 ? ["--threads", String(this.config.threads)] : []),
       ...(inference.speculativeType === "none" ? [] : ["--spec-type", inference.speculativeType]),
       ...(inference.speculativeType !== "draft-mtp" ? [] : [
-        "--spec-draft-model", draftFile!,
+        ...(embedded ? [] : ["--spec-draft-model", draftFile!]),
         "--spec-draft-n-max", String(inference.draftMax),
         "--spec-draft-type-k", inference.draftCacheTypeK,
         "--spec-draft-type-v", inference.draftCacheTypeV,
-        ...(inference.draftDevice === "cpu" ? ["--spec-draft-device", "none", "--spec-draft-ngl", "0"] : []),
+        ...(!embedded && inference.draftDevice === "cpu" ? ["--spec-draft-device", "none", "--spec-draft-ngl", "0"] : []),
       ]),
       ...(this.config.logFile ? ["--log-file", expandLocalPath(this.config.logFile, this.cwd)] : []),
     ];
@@ -230,7 +241,8 @@ export class LlamaRuntime implements LocalRuntime {
     child.stdout?.on("data", log); child.stderr?.on("data", log);
     child.once("error", (error) => { failure = error; });
     this.runningInferenceSignature = inferenceSignature;
-    this.running = { id: options.model, sizeBytes: details.sizeBytes ?? 0, sizeVramBytes: 0, contextLength: options.numCtx, memoryKnown: false, inferenceProfile: inference.profile };
+    this.running = { id: options.model, sizeBytes: details.sizeBytes ?? 0, sizeVramBytes: 0, contextLength: options.numCtx, memoryKnown: false, inferenceProfile: inference.profile,
+      ...(mtp ? { inferenceMtpMode: embedded ? "embedded" : "sidecar", inferenceDraftMax: inference.draftMax } : {}) };
     try {
       const deadline = Date.now() + this.config.startupTimeoutMs;
       while (!(await this.available())) {

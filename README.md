@@ -12,7 +12,7 @@
 
 `llama.cpp` · `Ollama` · `OpenAI-compatible` · `GGUF` · `TUI`
 
-[![version](https://img.shields.io/badge/version-0.7.0-7dd3fc?style=flat-square)](#что-нового-в-070)
+[![version](https://img.shields.io/badge/version-0.7.1-7dd3fc?style=flat-square)](#что-нового-в-071)
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020.11-339933?style=flat-square&logo=node.js&logoColor=white)](#быстрый-старт)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4b5563?style=flat-square)](#быстрый-старт)
 [![license](https://img.shields.io/badge/license-MIT-86efac?style=flat-square)](LICENSE)
@@ -36,6 +36,7 @@ read-before-edit, контроль повторов, durable history, context co
 ## Содержание
 
 - [Быстрый старт](#быстрый-старт)
+- [Что нового в 0.7.1](#что-нового-в-071)
 - [Что нового в 0.7.0](#что-нового-в-070)
 - [Что нового в 0.6.0](#что-нового-в-060)
 - [Движки и модели](#движки-и-модели)
@@ -98,6 +99,37 @@ GGUF автоматически ищутся в:
 - `LLAMA_CACHE` или `~/.cache/llama.cpp`;
 - каталогах `llama.modelDirs`;
 - локальном Ollama cache — без копирования многогигабайтных blobs.
+
+---
+
+## Что нового в 0.7.1
+
+- **Добавлена поддержка встроенного Qwen MTP**: MTP-head определяется по GGUF
+  metadata, отдельный sidecar не нужен. Gemma продолжает использовать свой
+  sidecar без изменения настроек.
+- Qwen XML tool calls проходят общий schema/approval/read-before-edit pipeline;
+  литеральные теги и содержимое создаваемых файлов сохраняются.
+- `/info` показывает фактически загруженный MTP mode и draft depth.
+- Исправлено распознавание `node --experimental-strip-types --test`, в том числе
+  после `cd … &&`, как выполненной проверки.
+
+Предрелизная проверка **Qwen3.6-35B-A3B-MTP UD-IQ4_XS** на RTX 3050 8 ГБ,
+32K context, thinking on, seed 42:
+
+| MTP depth | Решено | Взвешенная скорость | Acceptance | Время трёх задач |
+| --- | ---: | ---: | ---: | ---: |
+| x2 | 3/3 | 27.28 tok/s | 85.9% | 392.7 с |
+| x3 | 3/3 | 27.23 tok/s | 79.1% | 352.6 с |
+
+Глубины x4/x6/x16 завершили только Cache: 26.17/23.37/14.51 tok/s соответственно.
+Это один seed и три задачи, **не результат полного 10-case suite**. Контроля без
+MTP нет; x3 сократил agent-loop, но не увеличил скорость генерации относительно
+x2. У x2 независимые проверки прошли, несмотря на ложный completion FAIL,
+исправленный в 0.7.1.
+
+Подробности: [`docs/RELEASE_0.7.1.md`](docs/RELEASE_0.7.1.md),
+[`docs/QWEN_MTP_BENCHMARK.md`](docs/QWEN_MTP_BENCHMARK.md) и
+[`data/qwen-mtp.json`](data/qwen-mtp.json).
 
 ---
 
@@ -388,7 +420,7 @@ reasoning и approvals идут в stderr.
 | `/goal <task>` | задать цель evaluator; `/goal off` — очистить |
 | `/context [tokens]` | context picker / ручной размер |
 | `/think [mode]` | thinking mode |
-| `/inference [profile]` | Standard, N-gram или Gemma MTP 2x/3x/6x/8x |
+| `/inference [profile]` | Standard, N-gram, встроенный Qwen или Gemma-sidecar MTP |
 | `/profile [name]` | tool profile |
 | `/new`, `/sessions` | новая / другая сессия |
 | `/retry` | повторить последний user request |
@@ -434,14 +466,21 @@ reasoning и approvals идут в stderr.
 ```
 
 `speculativeType` принимает `none`, экспериментальный `ngram-mod` или
-`draft-mtp` для совместимых свежих сборок llama-server. Для MTP также задаются
-`speculativeDraftModel`, `speculativeDraftDevice` (`auto`/`cpu`) и
-`speculativeDraftMax`. N-gram не загружает вторую модель; оба режима должны
+`draft-mtp` для совместимых свежих сборок llama-server. `speculativeMtpMode`
+принимает `auto`, `embedded` или `sidecar`. Для sidecar MTP задаётся
+`speculativeDraftModel`; для обоих вариантов — `speculativeDraftDevice`
+(`auto`/`cpu`) и `speculativeDraftMax`. N-gram не загружает вторую модель; режимы должны
 измеряться отдельно от смены runtime.
 
 Предпочтительный интерфейс — `/inference`: выбор хранится отдельно для
 каждой модели и применяется при следующей managed-загрузке. Для one-shot режима
 доступны `--inference <profile>` и `--draft-model <path.gguf>`.
+
+Встроенный Qwen MTP поддерживается с **0.7.1**: GGUF с
+`nextn_predict_layers` не требует `--draft-model`. Его head использует placement
+целевой модели, `parallel=1` и точную выбранную draft depth. Обычный Qwen GGUF без
+MTP-весов не считается совместимым только из-за имени модели. Подробнее:
+[`docs/ENGINES.md`](docs/ENGINES.md#встроенный-qwen-mtp-071).
 
 ### Goal evaluator override
 
@@ -617,6 +656,8 @@ src/
 
 | Документ | Содержание |
 | --- | --- |
+| [`docs/RELEASE_0.7.1.md`](docs/RELEASE_0.7.1.md) | поддержка Qwen MTP и изменения 0.7.1 |
+| [`docs/QWEN_MTP_BENCHMARK.md`](docs/QWEN_MTP_BENCHMARK.md) | методика и результаты Qwen MTP |
 | [`docs/RELEASE_0.7.md`](docs/RELEASE_0.7.md) | изменения 0.7 |
 | [`docs/RELEASE_0.6.md`](docs/RELEASE_0.6.md) | изменения 0.6 |
 | [`docs/ROADMAP_0.6.md`](docs/ROADMAP_0.6.md) | согласованный roadmap |

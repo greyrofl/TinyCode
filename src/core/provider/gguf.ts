@@ -83,7 +83,7 @@ export async function readGgufMetadata(file: string): Promise<Record<string, unk
     for (let i = 0; i < count; i++) {
       const key = (await string(true))!;
       const type = (await bytes(4)).readUInt32LE();
-      const keep = key.startsWith("general.") || key === "tokenizer.chat_template" || /\.(context_length|block_count|embedding_length|expert_count|expert_used_count|attention\.(head_count|head_count_kv|key_length|value_length|key_length_swa|value_length_swa|sliding_window))$/.test(key);
+      const keep = key.startsWith("general.") || key === "tokenizer.chat_template" || /\.(nextn_predict_layers|context_length|block_count|embedding_length|expert_count|expert_used_count|attention\.(head_count|head_count_kv|key_length|value_length|key_length_swa|value_length_swa|sliding_window))$/.test(key);
       const entry = await value(type, keep);
       if (keep && entry !== undefined) metadata[key] = entry;
     }
@@ -98,6 +98,10 @@ export function ggufModelDetails(id: string, metadata: Record<string, unknown>, 
   } });
   details.name = typeof metadata["general.name"] === "string" ? metadata["general.name"] : path.basename(id);
   details.sizeBytes = sizeBytes;
+  const nextn = metadata[`${details.family}.nextn_predict_layers`];
+  if (typeof nextn === "number" && Number.isInteger(nextn) && nextn > 0) details.mtp = { mode: "embedded", layers: nextn };
+  else if (details.family === "gemma4-assistant") details.mtp = { mode: "sidecar" };
+  details.role = details.mtp?.mode === "sidecar" ? "draft" : "target";
   details.quantization = /(?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32)/i.exec(path.basename(id))?.[0]?.toUpperCase();
   const toggle = /enable_thinking|enable_reasoning/.test(template);
   const thinking = toggle || /<think>|<\|channel\|>|reasoning_effort/.test(template);
@@ -172,8 +176,12 @@ export class GgufCatalog {
       const info = await stat(file).catch(() => null);
       if (!info?.isFile() || !await ggufMagic(file)) continue;
       const name = id.startsWith("ollama-cache/") ? id : path.basename(id);
-      const role = /(?:^|[-_. ])(?:mtp|draft)(?:[-_. ]|$)/i.test(`${id} ${name}`) ? "draft" as const : "target" as const;
-      result.push({ id, name, sizeBytes: info.size, modifiedAt: info.mtime.toISOString(), role });
+      // Read suspicious entries to distinguish full MTP-enabled targets from
+      // standalone sidecars. A folder/repository named "MTP" is not a role.
+      const suspicious = /(?:^|[-_. /\\])(?:mtp|draft)(?:[-_. /\\]|$)/i.test(`${id} ${name} ${path.basename(file)}`);
+      const details = suspicious ? await this.getDetails(id).catch(() => null) : null;
+      const role = details?.role ?? "target";
+      result.push({ id, name, sizeBytes: info.size, modifiedAt: info.mtime.toISOString(), role, ...(details?.mtp ? { mtp: details.mtp } : {}) });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
   }

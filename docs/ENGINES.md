@@ -17,8 +17,9 @@
 Настройки context/thinking/sampling разделены ключами `llama.cpp::<model>` и
 старыми Ollama model ids в `models`.
 
-В ветке 0.7 к model preference добавлен inference profile. После выбора модели
-TUI предлагает `Standard`, `N-gram` и Gemma MTP с глубиной 2/3/6/8. Изменение
+С 0.7 model preference содержит inference profile. После выбора модели
+TUI предлагает `Standard`, `N-gram` и MTP с глубиной 2/3/6/8. Gemma использует
+sidecar, а Qwen с 0.7.1 может использовать встроенный head. Изменение
 профиля не загружает веса сразу: managed llama-server получает новую launch
 signature при следующем prompt. Совпадающая signature переиспользует runner,
 отличающаяся вызывает один controlled reload.
@@ -26,6 +27,32 @@ signature при следующем prompt. Совпадающая signature п�
 MTP sidecar ищется отдельно от selectable target-моделей. Он должен быть
 локальным совместимым GGUF; TinyCode не скачивает его. Чужой llama-server не
 перенастраивается inference-профилем — параметры задаёт его владелец.
+
+### Встроенный Qwen MTP (0.7.1)
+
+Qwen3.6 MTP GGUF содержит head в основных весах. TinyCode обнаруживает её по
+`nextn_predict_layers`, а не по имени файла/репозитория. Такая модель показывается
+в `/models` как целевая, не как draft sidecar, и `/inference mtp-2` или `mtp-3`
+работает без дополнительного пути к весам.
+
+`llama.speculativeMtpMode` принимает `auto` (по умолчанию), `embedded` и
+`sidecar`. Для встроенного head требуются `parallel: 1` и
+`speculativeDraftDevice: "auto"`; TinyCode не загружает mmproj. Запуск передаёт
+`--spec-type draft-mtp` и точную глубину `--spec-draft-n-max`, но не
+`--spec-draft-model`. Смена профиля оставляет историю сессии неизменной.
+
+Для уже скачанного через Ollama файла:
+
+```text
+/model ollama-cache/unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ4_XS
+/inference mtp-3
+```
+
+Модель проверяется перед освобождением работающего owned runner. Отсутствующий
+head, неверный MTP mode и неподдерживаемые CLI flags не вызывают замену модели.
+Формат Qwen XML (`<function=...>`, `<parameter=...>`) разбирается по tool schema
+и проходит тот же read-before-edit/approval/verification pipeline. Литеральные
+теги в содержимом файлов не преобразуются в действия.
 
 При смене Ollama → llama.cpp TinyCode выгружает только выбранный Ollama runner и
 ждёт освобождения VRAM. Сам daemon и другие загруженные в нём модели не

@@ -1,4 +1,5 @@
 import { errorMessage } from "../util/errors.js";
+import type { ToolDefinition, ToolParameterSchema } from "./types.js";
 
 const OPEN = "<tool_call>";
 const CLOSE = "</tool_call>";
@@ -99,6 +100,52 @@ function parseJsonObject(text: string): Record<string, unknown> {
   }
 }
 
+function toolNameIn(text: string): string | undefined {
+  return /["']?name["']?\s*:\s*["']([^"']+)/i.exec(text)?.[1]
+    ?? /<function=([A-Za-z_][A-Za-z0-9_.:-]*)>/i.exec(text)?.[1];
+}
+
+function xmlArgument(raw: string, schema?: ToolParameterSchema): unknown {
+  // Remove only the XML framing newline. File content/oldText/newText must not
+  // be trimmed or HTML-decoded, including literal JSON, quotes and tool tags.
+  const text = raw.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+  if (!schema || schema.type === "string") return text;
+  const value = JSON.parse(text.trim());
+  const valid = schema.type === "integer" ? Number.isInteger(value)
+    : schema.type === "number" ? typeof value === "number" && Number.isFinite(value)
+      : schema.type === "boolean" ? typeof value === "boolean"
+        : schema.type === "array" ? Array.isArray(value)
+          : schema.type === "object" ? value !== null && typeof value === "object" && !Array.isArray(value) : false;
+  if (!valid) throw new Error(`XML parameter must have schema type ${schema.type}.`);
+  return value;
+}
+
+function parseXmlCall(body: string, definitions: readonly Pick<ToolDefinition, "name" | "parameters">[]): ParsedToolCall {
+  const functionTag = /^\s*<function=([A-Za-z_][A-Za-z0-9_.:-]*)>/.exec(body);
+  if (!functionTag) throw new Error("Invalid Qwen function tag.");
+  const name = functionTag[1]!;
+  const definition = definitions.find((tool) => tool.name === name);
+  const args: Record<string, unknown> = Object.create(null);
+  let cursor = functionTag[0].length;
+  for (;;) {
+    const rest = body.slice(cursor).trimStart();
+    cursor = body.length - rest.length;
+    if (rest.startsWith("</function>")) {
+      if (rest.slice("</function>".length).trim()) throw new Error("Unexpected content after Qwen function block.");
+      return { name, arguments: args };
+    }
+    const parameter = /^<parameter=([A-Za-z_][A-Za-z0-9_.:-]*)>/.exec(rest);
+    if (!parameter) throw new Error("Incomplete or malformed Qwen parameter/function block.");
+    const key = parameter[1]!;
+    if (Object.hasOwn(args, key)) throw new Error(`Duplicate XML parameter: ${key}`);
+    const start = cursor + parameter[0].length;
+    const end = body.indexOf("</parameter>", start);
+    if (end === -1) throw new Error(`Unclosed XML parameter: ${key}`);
+    args[key] = xmlArgument(body.slice(start, end), definition?.parameters.properties[key]);
+    cursor = end + "</parameter>".length;
+  }
+}
+
 function quoteNativeKeys(text: string): string {
   let out = "", quoted = false, escaped = false, expectKey = false;
   for (let index = 0; index < text.length; index++) {
@@ -153,6 +200,16 @@ export function normalizeNativeToolCalls(raw: string): string {
     const lower = raw.toLowerCase();
     const found = NATIVE_PROTOCOLS.map((protocol) => ({ protocol, index: lower.indexOf(protocol.open, cursor) }))
       .filter((item) => item.index !== -1).sort((a, b) => a.index - b.index)[0];
+    const standard = lower.indexOf(OPEN, cursor);
+    if (standard !== -1 && (!found || standard < found.index)) {
+      // Standard JSON/XML parameters can contain literal native tool tags as
+      // file data. Never normalize those inside an enclosing call body.
+      const end = closingTag(raw, standard + OPEN.length);
+      if (end === -1) { output += raw.slice(cursor); break; }
+      output += raw.slice(cursor, end + CLOSE.length);
+      cursor = end + CLOSE.length;
+      continue;
+    }
     if (!found) { output += raw.slice(cursor); break; }
     output += raw.slice(cursor, found.index);
     const bodyStart = found.index + found.protocol.open.length;
@@ -208,6 +265,26 @@ function findTag(text: string, tag: string): number {
 
 /** A tag inside a JSON string is file content, not a protocol delimiter. */
 function closingTag(text: string, from = 0): number {
+  if (/^\s*<function=/.test(text.slice(from))) {
+    // XML parameter bodies are raw file text, not JSON strings. Ignore their
+    // literal </tool_call> tags and quotes while locating the protocol close.
+    let cursor = from;
+    for (;;) {
+      const parameter = text.indexOf("<parameter=", cursor);
+      const functionEnd = text.indexOf("</function>", cursor);
+      if (functionEnd === -1) return -1;
+      if (parameter !== -1 && parameter < functionEnd) {
+        const end = text.indexOf("</parameter>", parameter);
+        if (end === -1) return -1;
+        cursor = end + "</parameter>".length;
+      } else {
+        const end = functionEnd + "</function>".length;
+        const suffix = text.slice(end);
+        const match = /^\s*<\/tool_call>/i.exec(suffix);
+        return match ? end + match[0].length - CLOSE.length : -1;
+      }
+    }
+  }
   let quoted = false;
   let escaped = false;
   for (let index = from; index < text.length; index++) {
@@ -232,12 +309,26 @@ export class ToolCallStreamFilter {
   private quoted = false;
   private escaped = false;
   private closeTag = CLOSE;
+  private bodyFormat: "pending" | "json" | "xml" = "pending";
 
   push(delta: string): string {
     this.buffer += delta;
     let out = "";
     for (;;) {
       if (this.suppressed) {
+        if (this.bodyFormat === "pending") {
+          const first = this.buffer.trimStart()[0];
+          if (!first) return out;
+          this.bodyFormat = first === "<" && this.closeTag === CLOSE ? "xml" : "json";
+        }
+        if (this.bodyFormat === "xml") {
+          const end = closingTag(this.buffer);
+          if (end === -1) return out;
+          this.buffer = this.buffer.slice(end + CLOSE.length);
+          this.suppressed = false;
+          this.bodyFormat = "pending";
+          continue;
+        }
         let ended = false;
         for (let index = 0; index < this.buffer.length; index++) {
           const char = this.buffer[index]!;
@@ -273,6 +364,7 @@ export class ToolCallStreamFilter {
         out += this.buffer.slice(0, start);
         this.buffer = this.buffer.slice(start + opening.open.length);
         this.suppressed = true;
+        this.bodyFormat = "pending";
         this.closeTag = opening.close;
         this.quoted = false;
         this.escaped = false;
@@ -307,7 +399,7 @@ export class ToolCallStreamFilter {
 }
 
 /** Parse text-protocol tool calls emitted by small models. */
-export function parseToolCalls(raw: string): ParsedToolCalls {
+export function parseToolCalls(raw: string, definitions: readonly Pick<ToolDefinition, "name" | "parameters">[] = []): ParsedToolCalls {
   raw = normalizeNativeToolCalls(raw);
   const calls: ParsedToolCall[] = [];
   const errors: string[] = [];
@@ -327,13 +419,13 @@ export function parseToolCalls(raw: string): ParsedToolCalls {
       cursor = end + CLOSE.length;
     } else {
       const body = raw.slice(bodyStart).trim();
-      const recovered = balancedObject(body);
+      const recovered = /^\s*<function=/.test(body) ? null : balancedObject(body);
       if (recovered) bodies.push(recovered);
       else {
         const fragment = body.slice(0, 500);
         const message = "A <tool_call> block was not closed and its JSON object is incomplete.";
         errors.push(message);
-        issues.push({ message, fragment, kind: "incomplete", toolName: /["']?name["']?\s*:\s*["']([^"']+)/i.exec(fragment)?.[1] });
+        issues.push({ message, fragment, kind: "incomplete", toolName: toolNameIn(fragment) });
       }
       break;
     }
@@ -346,7 +438,7 @@ export function parseToolCalls(raw: string): ParsedToolCalls {
       continue;
     }
     try {
-      const parsed = parseJsonObject(body) as { name?: unknown; arguments?: unknown };
+      const parsed = (/^\s*<function=/.test(body) ? parseXmlCall(body, definitions) : parseJsonObject(body)) as { name?: unknown; arguments?: unknown };
       if (!parsed || typeof parsed !== "object") throw new Error("expected a JSON object.");
       const name = parsed.name;
       if (typeof name !== "string" || !name.trim()) throw new Error('"name" must be a non-empty string.');
@@ -364,7 +456,7 @@ export function parseToolCalls(raw: string): ParsedToolCalls {
     } catch (error) {
       const message = `Invalid tool call JSON: ${errorMessage(error)}`;
       errors.push(message);
-      issues.push({ message, fragment: body.slice(0, 500), kind: "json", toolName: /["']?name["']?\s*:\s*["']([^"']+)/i.exec(body)?.[1] });
+      issues.push({ message, fragment: body.slice(0, 500), kind: "json", toolName: toolNameIn(body) });
     }
   }
 

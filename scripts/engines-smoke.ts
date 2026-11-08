@@ -58,6 +58,18 @@ const modelBytes = Buffer.concat([
 ]);
 const modelFile = path.join(root, "simulated-7B-Q4_K_M.gguf");
 await writeFile(modelFile, modelBytes);
+const tinyGguf = (entries: Array<[string, string | number]>) => Buffer.concat([
+  Buffer.from("GGUF"), u32(3), u64(0), u64(entries.length),
+  ...entries.map(([key, value]) => Buffer.concat([string(key), u32(typeof value === "number" ? 4 : 8), typeof value === "number" ? u32(value) : string(value)])),
+]);
+const embeddedFile = path.join(root, "Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf");
+const embeddedBytes = tinyGguf([
+  ["general.architecture", "qwen35moe"], ["general.name", "Qwen3.6 35B A3B"], ["general.size_label", "35B"],
+  ["qwen35moe.context_length", 262144], ["qwen35moe.block_count", 41], ["qwen35moe.nextn_predict_layers", 1],
+  ["tokenizer.chat_template", "{% if enable_thinking %}<think>{% endif %}"],
+]);
+const sidecarBytes = tinyGguf([["general.architecture", "gemma4-assistant"], ["general.name", "Gemma MTP sidecar"]]);
+await writeFile(embeddedFile, embeddedBytes);
 
 class FakeChild extends EventEmitter {
   exitCode: number | null = null;
@@ -201,6 +213,7 @@ try {
   assert.equal(mergeConfig({ llama: { speculativeType: "ngram-mod" } }).llama.speculativeType, "ngram-mod");
   assert.equal(mergeConfig({ llama: { speculativeType: "draft-mtp", speculativeDraftModel: "draft.gguf", speculativeDraftDevice: "cpu", speculativeDraftMax: 5 } }).llama.speculativeDraftMax, 5);
   assert.equal(mergeConfig({ llama: { speculativeType: "invalid" } }).llama.speculativeType, "none");
+  assert.equal(mergeConfig({ llama: { speculativeMtpMode: "embedded" } }).llama.speculativeMtpMode, "embedded");
   console.log("ok llama.cpp-first defaults / old Ollama config preserved / engine model defaults");
 
   let network = 0;
@@ -300,7 +313,8 @@ try {
   await writeFile(path.join(modelDir, "split-7B-00001-of-00010.gguf"), modelBytes);
   await writeFile(path.join(modelDir, "split-7B-00010-of-00010.gguf"), modelBytes);
   await writeFile(path.join(modelDir, "mmproj-fake.gguf"), modelBytes);
-  await writeFile(path.join(modelDir, "mtp-simulated-7B-Q8_0.gguf"), modelBytes);
+  await writeFile(path.join(modelDir, "mtp-simulated-7B-Q8_0.gguf"), sidecarBytes);
+  await writeFile(path.join(modelDir, "Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf"), embeddedBytes);
   const digest = "1".repeat(64), manifests = path.join(process.env.OLLAMA_MODELS!, "manifests/registry.ollama.ai/library/simulated-model");
   await mkdir(manifests, { recursive: true }); await mkdir(path.join(process.env.OLLAMA_MODELS!, "blobs"), { recursive: true });
   await writeFile(path.join(manifests, "7b"), JSON.stringify({ layers: [{ mediaType: "application/vnd.ollama.image.model", digest: `sha256:${digest}` }] }));
@@ -309,6 +323,9 @@ try {
   const local = await catalog.list();
   assert(local.some((m) => m.id === "alias")); assert(local.some((m) => m.id === "ollama-cache/simulated-model:7b"));
   assert.equal(local.find((m) => /mtp-simulated/.test(m.id))?.role, "draft");
+  const embeddedEntry = local.find((m) => /Qwen3.6.*MTP/.test(m.id))!;
+  assert.equal(embeddedEntry.role, "target", "an MTP repository name must not hide a full target GGUF");
+  assert.deepEqual(embeddedEntry.mtp, { mode: "embedded", layers: 1 });
   assert(!local.some((m) => /00010-of|mmproj/.test(m.id)));
   assert.equal(await catalog.resolve("ollama-cache/simulated-model:7b"), path.join(process.env.OLLAMA_MODELS!, "blobs", `sha256-${digest}`));
   assert.equal((await catalog.getDetails("alias")).contextMemory?.variableKvBytesPerToken, 131072);
@@ -352,7 +369,7 @@ try {
   assert(simulator.events.indexOf("memory-free") < simulator.events.indexOf("spawn:32768"));
 
   const draftFile = path.join(root, "mtp-gemma-simulated-Q8_0.gguf");
-  await writeFile(draftFile, modelBytes);
+  await writeFile(draftFile, sidecarBytes);
   const mtp = (profile: "mtp-3" | "mtp-6", draftMax: number) => ({
     profile, speculativeType: "draft-mtp" as const, draftModel: draftFile,
     draftDevice: "auto" as const, draftMax, draftCacheTypeK: "q8_0", draftCacheTypeV: "q8_0",
@@ -375,6 +392,69 @@ try {
   } });
   assert.equal(simulator.spawns.at(-1)!.args[simulator.spawns.at(-1)!.args.indexOf("--spec-type") + 1], "ngram-mod");
   assert(!simulator.spawns.at(-1)!.args.includes("--spec-draft-model"));
+  for (const depth of [2, 4, 5, 6, 8]) {
+    await provider.loadModel({ model: embeddedFile, numCtx: 32768, inference: {
+      ...mtp("mtp-3", depth), mtpMode: "embedded", draftModel: undefined,
+    } });
+    const args = simulator.spawns.at(-1)!.args;
+    assert.equal(args[args.indexOf("--spec-draft-n-max") + 1], String(depth));
+    assert(!args.includes("--spec-draft-model"), "embedded MTP uses the same loaded GGUF");
+    assert(!args.includes("--spec-draft-device"), "embedded MTP follows target placement");
+  }
+  const embeddedSpawnCount = simulator.spawns.length;
+  await provider.loadModel({ model: embeddedFile, numCtx: 32768, inference: { ...mtp("mtp-3", 8), mtpMode: "embedded", draftModel: undefined } });
+  assert.equal(simulator.spawns.length, embeddedSpawnCount, "unchanged embedded MTP reuses the runner");
+  await assert.rejects(provider.loadModel({ model: modelFile, numCtx: 32768, inference: { ...mtp("mtp-3", 2), mtpMode: "embedded", draftModel: undefined } }), /no embedded MTP head/);
+  assert.equal(simulator.child!.killed, false, "invalid replacement metadata must not release a working runner");
+
+  const rawConfig = defaultConfig();
+  rawConfig.model = embeddedFile;
+  rawConfig.llama.speculativeType = "draft-mtp";
+  rawConfig.llama.speculativeMtpMode = "embedded";
+  rawConfig.llama.speculativeDraftMax = 5;
+  rawConfig.generation.numCtx = 32768;
+  const rawChat = new ChatService({ config: rawConfig, provider, bus: new Bus(), store: new SessionStore(path.join(root, "raw-depth-sessions")), cwd: root });
+  await rawChat.initialize();
+  await rawChat.loadCurrentModel();
+  assert.equal(simulator.spawns.at(-1)!.args[simulator.spawns.at(-1)!.args.indexOf("--spec-draft-n-max") + 1], "5", "low-level benchmark depth is never rounded to a TUI preset");
+  assert.equal((await rawChat.inferenceSupport()).mode, "embedded");
+  await rawChat.setInferenceProfile("mtp-2");
+  await rawChat.loadCurrentModel();
+  assert.equal(rawChat.loadedRunnerInfo?.inferenceMtpMode, "embedded");
+  assert.equal(rawChat.loadedRunnerInfo?.inferenceDraftMax, 2);
+  const qwenSession = rawChat.current!.meta.id;
+  await assert.rejects(rawChat.setInferenceProfile("mtp-3", draftFile), /already contains MTP weights/);
+  const qwenTui = new TinyCodeTui({ chat: rawChat, config: rawConfig, persistedConfig: structuredClone(rawConfig), configPath: path.join(root, "home/config.json"), bus: new Bus(), cwd: root, runtime });
+  const qwenUi = qwenTui as unknown as {
+    picker: Picker | null;
+    pickerKind: string | null;
+    scheduleRender(): void;
+    openInferencePicker(): Promise<void>;
+    applyPickerSelection(kind: string, item: { value: string; label: string }): Promise<void>;
+    runCommand(text: string): Promise<void>;
+  };
+  qwenUi.scheduleRender = () => {};
+  await qwenUi.openInferencePicker();
+  assert(qwenUi.picker!.items.filter((item) => item.value.startsWith("mtp-")).every((item) => !item.disabled && item.detail?.includes("embedded")));
+  qwenUi.picker = null; qwenUi.pickerKind = null;
+  await qwenUi.applyPickerSelection("inference", { value: "mtp-3", label: "MTP 3x" });
+  assert.equal(rawChat.currentInferenceProfile, "mtp-3");
+  assert.equal(qwenUi.pickerKind, null, "Qwen MTP selection must not ask for a sidecar");
+  await qwenUi.runCommand("/inference mtp-2");
+  assert.equal(rawChat.currentInferenceProfile, "mtp-2");
+  const savedQwen = mergeConfig(JSON.parse(await readFile(path.join(root, "home/config.json"), "utf8")));
+  assert.deepEqual(savedQwen.models[rawChat.modelPreferenceKey]!.inference, { profile: "mtp-2" });
+  await rawChat.createSession({ model: "simulated-7B" });
+  await assert.rejects(rawChat.setInferenceProfile("mtp-2"), /embedded head.*Gemma sidecar/);
+  await rawChat.resume(qwenSession);
+  assert.equal(rawChat.currentInferenceProfile, "mtp-2", "embedded MTP profile survives session resume");
+  assert.equal(rawChat.currentInferenceDraftModel, null);
+  const spawnsBeforeInvalidMode = simulator.spawns.length;
+  await assert.rejects(provider.loadModel({ model: embeddedFile, numCtx: 32768, inference: { ...mtp("mtp-3", 3), mtpMode: "sidecar" } }), /already contains an MTP head/);
+  runtime.config.parallel = 2;
+  await assert.rejects(provider.loadModel({ model: embeddedFile, numCtx: 32768, inference: { ...mtp("mtp-3", 3), mtpMode: "embedded", draftModel: undefined } }), /parallel=1/);
+  runtime.config.parallel = 1;
+  assert.equal(simulator.spawns.length, spawnsBeforeInvalidMode, "invalid embedded MTP setup must not allocate a replacement");
   await runtime.dispose();
   assert.equal(simulator.child!.killed, true);
   console.log("ok direct GGUF argv / one-slot load / streamed Unicode + reasoning / actual token refusal / unload-VRAM-reload");
@@ -416,7 +496,25 @@ try {
   assert.equal(nativeChat.current!.messages.at(-1)!.outcome, "completed", nativeChat.current!.messages.at(-1)!.error);
   assert.equal(nativeChat.current!.meta.provider, "llama.cpp");
   nativeTools.dispose(); await nativeRuntime.dispose();
+  assert.deepEqual(nativeSimulator.templates[0]!.tools, nativeSimulator.requests[0]!.tools, "actual token preflight includes the same native tools as generation");
   console.log("ok native tool delta bridge -> existing parser/guards -> complete file -> read-back verification");
+
+  const xmlSimulator = new LlamaSimulator(), xmlRuntime = xmlSimulator.runtime();
+  let xmlPhase = 0;
+  const xmlContent = 'export const text = "</tool_call>";\n// <|tool_call>call:read_file{path:"literal"}<tool_call|>\n';
+  const xmlCall = (name: string, args: Record<string, string>) => `<tool_call>\n<function=${name}>\n${Object.entries(args).map(([key, value]) => `<parameter=${key}>\n${value}\n</parameter>`).join("\n")}\n</function>\n</tool_call>`;
+  xmlSimulator.response = () => [{ choices: [{ delta: { content: xmlPhase++ === 0
+    ? xmlCall("create_file", { path: "qwen-created.ts", content: xmlContent })
+    : xmlPhase === 2 ? xmlCall("read_file", { path: "qwen-created.ts" })
+      : "Created qwen-created.ts and read its contents." }, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 } }];
+  const xmlTools = createDefaultTools();
+  const xmlChat = new ChatService({ config: structuredClone(nativeConfig), provider: new LlamaProvider(xmlRuntime), tools: xmlTools, bus: new Bus(), store: new SessionStore(path.join(root, "xml-sessions")), cwd: root, systemPrompt: "Test agent" });
+  await xmlChat.initialize();
+  await xmlChat.send("Create qwen-created.ts with the requested literal content.");
+  assert.equal(await readFile(path.join(root, "qwen-created.ts"), "utf8"), xmlContent);
+  assert.equal(xmlChat.current!.messages.at(-1)!.outcome, "completed", xmlChat.current!.messages.at(-1)!.error);
+  xmlTools.dispose(); await xmlRuntime.dispose();
+  console.log("ok Qwen XML tool-call fallback / schema arguments / literal file bytes / same approval and completion guards");
 
   const brokenStream = new LlamaSimulator(); brokenStream.endMarker = false;
   brokenStream.response = () => native("create_file", { path: "broken-stream.html", content: "Not to be written" });

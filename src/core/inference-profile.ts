@@ -12,6 +12,7 @@ export interface InferenceRuntimeOptions {
   profile: InferenceProfileId;
   speculativeType: "none" | "ngram-mod" | "draft-mtp";
   draftModel?: string;
+  mtpMode?: "auto" | "embedded" | "sidecar";
   draftDevice: "auto" | "cpu";
   draftMax: number;
   draftCacheTypeK: string;
@@ -54,18 +55,21 @@ export function inferenceRuntimeOptions(
     speculativeDraftDevice: "auto" | "cpu";
     speculativeDraftCacheTypeK: string;
     speculativeDraftCacheTypeV: string;
+    speculativeMtpMode?: "auto" | "embedded" | "sidecar";
   },
   draftModel?: string,
+  draftMax?: number,
 ): InferenceRuntimeOptions {
   const mtp = isMtpProfile(profile);
   return {
     profile,
     speculativeType: profile === "ngram" ? "ngram-mod" : mtp ? "draft-mtp" : "none",
-    ...(mtp && (draftModel || defaults.speculativeDraftModel)
+    mtpMode: defaults.speculativeMtpMode ?? "auto",
+    ...(mtp && defaults.speculativeMtpMode !== "embedded" && (draftModel || defaults.speculativeDraftModel)
       ? { draftModel: draftModel || defaults.speculativeDraftModel! }
       : {}),
     draftDevice: defaults.speculativeDraftDevice,
-    draftMax: mtp ? Number(profile.slice(4)) : 0,
+    draftMax: mtp ? draftMax ?? Number(profile.slice(4)) : 0,
     draftCacheTypeK: defaults.speculativeDraftCacheTypeK,
     draftCacheTypeV: defaults.speculativeDraftCacheTypeV,
   };

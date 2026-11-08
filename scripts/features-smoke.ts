@@ -21,7 +21,7 @@ import { TinyCodeTui } from "../src/tui/app.js";
 import { Picker, renderPicker } from "../src/tui/picker.js";
 import { getPalette } from "../src/tui/theme.js";
 import { taskRequirements } from "../src/core/task-guard.js";
-import { isVerificationCommand } from "../src/tools/change-feedback.js";
+import { isVerificationCommand, verificationKinds } from "../src/tools/change-feedback.js";
 import { buildContext } from "../src/core/context.js";
 import { attachMcpTools } from "../src/mcp/manager.js";
 import { parseDuckDuckGo } from "../src/tools/web-search-tool.js";
@@ -162,6 +162,10 @@ try {
   assert.deepEqual(taskRequirements("Исправь код и запусти тесты."), { change: true, tests: true });
   assert.equal(isVerificationCommand("npm test || echo passed"), false);
   assert.equal(isVerificationCommand("npm test | cat"), false);
+  assert.equal(isVerificationCommand('cd "D:\\workspace" && node --experimental-strip-types --test test/catalog.test.ts'), true);
+  assert.equal(verificationKinds('cd "D:\\workspace" && node --experimental-strip-types --test test/catalog.test.ts').has("test"), true);
+  assert.equal(isVerificationCommand("node --experimental-strip-types --test test/catalog.test.ts || echo passed"), false);
+  assert.equal(isVerificationCommand('node --eval "console.log(\'passed\')" --test'), false);
   const olderOutput = `HEAD-${"a".repeat(7000)}-TAIL`;
   const latestOutput = `LATEST-${"b".repeat(8000)}-END`;
   const observationContext = buildContext([
@@ -344,7 +348,7 @@ try {
   assert.equal(inferenceProfiles.chat.currentInferenceProfile, "mtp-3");
   assert.equal(inferenceProfiles.chat.currentInferenceDraftModel, "models/mtp-gemma.gguf");
   await inferenceProfiles.chat.setModel("qwen3:8b");
-  await assert.rejects(inferenceProfiles.chat.setInferenceProfile("mtp-3", "models/mtp-qwen.gguf"), /restricted to compatible Gemma/i);
+  await assert.rejects(inferenceProfiles.chat.setInferenceProfile("mtp-3", "models/mtp-qwen.gguf"), /embedded head.*Gemma sidecar/i);
   await inferenceProfiles.chat.setModel("Gemma Fresh 26B");
   const inferenceTui = new TinyCodeTui({
     chat: inferenceProfiles.chat, config: inferenceProfiles.config, persistedConfig: structuredClone(inferenceProfiles.config),

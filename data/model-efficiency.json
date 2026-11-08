@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-08T13:27:53.576Z",
+  "generatedAt": "2026-11-08T19:34:14.253Z",
   "title": "TinyCode local model efficiency observations",
   "status": "research-single-seed",
   "environment": {
@@ -12,7 +12,8 @@
     "Correctness ranks before speed; fast failed trials are not successful coding performance.",
     "Most observations use one seed and are not a statistically stable leaderboard.",
     "Runtime, quantization, cache type, draft depth and case set must match before comparing speeds.",
-    "No model weights or absolute local file paths are included in this dataset."
+    "No model weights or absolute local file paths are included in this dataset.",
+    "A frozen pre-release agent's results are not measurements of a later release; preserve its version/build metadata."
   ],
   "coreModelComparison": [
     {
@@ -25,6 +26,12 @@
         "id": "standard",
         "label": "Standard"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": null,
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -34,6 +41,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -90,6 +102,12 @@
         "id": "standard",
         "label": "Standard"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": null,
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -99,6 +117,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -155,6 +178,12 @@
         "id": "standard",
         "label": "Standard"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": null,
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -164,6 +193,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -220,6 +254,12 @@
         "id": "standard",
         "label": "Standard"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": null,
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -229,6 +269,11 @@
         "fitTargetMiB": 512,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -287,6 +332,12 @@
         "id": "ngram",
         "label": "N-gram"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -296,6 +347,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -342,6 +398,12 @@
         "id": "ngram",
         "label": "N-gram"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -351,6 +413,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -399,6 +466,12 @@
         "id": "standard",
         "label": "Standard"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -408,6 +481,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -458,6 +536,12 @@
         "id": "mtp-3",
         "label": "MTP 3x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -467,6 +551,11 @@
         "fitTargetMiB": null,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -513,6 +602,12 @@
         "id": "mtp-3",
         "label": "MTP 3x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -522,6 +617,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -568,6 +668,12 @@
         "id": "mtp-3",
         "label": "MTP 3x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -577,6 +683,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -626,6 +737,12 @@
         "id": "mtp-5",
         "label": "MTP 5x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -635,6 +752,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -681,6 +803,12 @@
         "id": "standard",
         "label": "Standard"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -690,6 +818,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -736,6 +869,12 @@
         "id": "mtp-3",
         "label": "MTP 3x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 8192,
@@ -745,6 +884,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -791,6 +935,12 @@
         "id": "mtp-6",
         "label": "MTP 6x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -800,6 +950,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -848,6 +1003,12 @@
         "id": "mtp-8",
         "label": "MTP 8x"
       },
+      "versions": {
+        "tinycode": "0.6.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": null,
+        "agentBuildHash": null
+      },
       "settings": {
         "context": 32768,
         "outputTokens": 2048,
@@ -857,6 +1018,11 @@
         "fitTargetMiB": 1536,
         "temperature": 0.2,
         "topP": 0.9,
+        "topK": null,
+        "minP": null,
+        "repeatPenalty": null,
+        "thinking": null,
+        "mtpMode": null,
         "seeds": [
           42
         ]
@@ -895,6 +1061,142 @@
         "peakGpuGiB": 6.825,
         "averageGpuUtilizationPercent": 48.17
       }
+    },
+    {
+      "runId": "20261108T184255Z",
+      "suite": "mtp-depth-3",
+      "model": "hf.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ4_XS",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-2",
+        "label": "MTP 2x"
+      },
+      "versions": {
+        "tinycode": "0.7.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": "tinycode-qwen-mtp-20261108T183957Z",
+        "agentBuildHash": "65d453bd830254aed42bca861b4362acf82782856dd031d2fab25951babdd796"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 4096,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.6,
+        "topP": 0.95,
+        "topK": 20,
+        "minP": 0,
+        "repeatPenalty": 1,
+        "thinking": "on",
+        "mtpMode": "embedded",
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 3,
+      "solved": 3,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 3
+      },
+      "medianSolvedSeconds": 126.798,
+      "medianAllSeconds": 126.798,
+      "totalAgentSeconds": 392.66,
+      "weightedDecodeTokensPerSecond": 27.276,
+      "inputTokens": 232660,
+      "outputTokens": 3952,
+      "draftAcceptanceRate": 0.8589,
+      "acceptedDraftTokens": 2484,
+      "draftedTokens": 2892,
+      "tools": {
+        "total": 34,
+        "successful": 28,
+        "failed": 6
+      },
+      "changedFiles": 3,
+      "falseSuccess": 0,
+      "falseFailure": 1,
+      "resources": {
+        "peakSystemRamGiB": 28.683,
+        "peakGpuGiB": 6.899,
+        "averageGpuUtilizationPercent": 46.88
+      }
+    },
+    {
+      "runId": "20261108T184953Z",
+      "suite": "mtp-depth-3",
+      "model": "hf.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ4_XS",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-3",
+        "label": "MTP 3x"
+      },
+      "versions": {
+        "tinycode": "0.7.0",
+        "llamaServer": "b12110-win32-x64-cuda",
+        "agentSnapshot": "tinycode-qwen-mtp-20261108T183957Z",
+        "agentBuildHash": "65d453bd830254aed42bca861b4362acf82782856dd031d2fab25951babdd796"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 4096,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.6,
+        "topP": 0.95,
+        "topK": 20,
+        "minP": 0,
+        "repeatPenalty": 1,
+        "thinking": "on",
+        "mtpMode": "embedded",
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 3,
+      "solved": 3,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 3
+      },
+      "medianSolvedSeconds": 118.656,
+      "medianAllSeconds": 118.656,
+      "totalAgentSeconds": 352.618,
+      "weightedDecodeTokensPerSecond": 27.226,
+      "inputTokens": 201281,
+      "outputTokens": 3340,
+      "draftAcceptanceRate": 0.7912,
+      "acceptedDraftTokens": 2331,
+      "draftedTokens": 2946,
+      "tools": {
+        "total": 29,
+        "successful": 26,
+        "failed": 3
+      },
+      "changedFiles": 3,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 27.912,
+        "peakGpuGiB": 6.907,
+        "averageGpuUtilizationPercent": 49.93
+      }
     }
   ],
   "excludedRuns": [
@@ -929,6 +1231,18 @@
     {
       "runId": "20261108T085142Z",
       "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T085142Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T185616Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T185616Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T185830Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T185830Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T190101Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T190101Z\\summaries.json'"
     }
   ]
 }

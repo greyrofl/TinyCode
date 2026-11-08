@@ -65,6 +65,7 @@ export interface Config {
     threads: number;
     parallel: number;
     speculativeType: "none" | "ngram-mod" | "draft-mtp";
+    speculativeMtpMode: "auto" | "embedded" | "sidecar";
     speculativeDraftModel: string | null;
     speculativeDraftDevice: "auto" | "cpu";
     speculativeDraftMax: number;
@@ -198,7 +199,7 @@ export function defaultConfig(): Config {
       loadMode: process.platform === "win32" ? "none" : "auto", fitTargetMiB: 512,
       flashAttention: "auto", cacheTypeK: "f16", cacheTypeV: "f16",
       batchSize: 256, microBatchSize: 256, threads: 0, parallel: 1,
-      speculativeType: "none", speculativeDraftModel: null, speculativeDraftDevice: "auto", speculativeDraftMax: 3,
+      speculativeType: "none", speculativeMtpMode: "auto", speculativeDraftModel: null, speculativeDraftDevice: "auto", speculativeDraftMax: 3,
       speculativeDraftCacheTypeK: "q8_0", speculativeDraftCacheTypeV: "q8_0", logFile: null,
     },
     ollama: {
@@ -380,6 +381,7 @@ export function mergeConfig(raw: unknown): Config {
     config.llama.threads = Math.round(readNumber(llama.threads, config.llama.threads, 0));
     config.llama.parallel = Math.min(16, Math.round(readNumber(llama.parallel, config.llama.parallel, 1)));
     if (["none", "ngram-mod", "draft-mtp"].includes(String(llama.speculativeType))) config.llama.speculativeType = llama.speculativeType as Config["llama"]["speculativeType"];
+    if (["auto", "embedded", "sidecar"].includes(String(llama.speculativeMtpMode))) config.llama.speculativeMtpMode = llama.speculativeMtpMode as Config["llama"]["speculativeMtpMode"];
     config.llama.speculativeDraftModel = typeof llama.speculativeDraftModel === "string" && llama.speculativeDraftModel.trim() ? llama.speculativeDraftModel.trim() : null;
     if (["auto", "cpu"].includes(String(llama.speculativeDraftDevice))) config.llama.speculativeDraftDevice = llama.speculativeDraftDevice as Config["llama"]["speculativeDraftDevice"];
     config.llama.speculativeDraftMax = Math.min(16, Math.round(readNumber(llama.speculativeDraftMax, config.llama.speculativeDraftMax, 1)));

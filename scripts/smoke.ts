@@ -467,6 +467,26 @@ if (gemmaQuoteTokens.errors.length > 0 || gemmaQuoteTokens.calls[0]?.name !== "r
   failures++;
   console.error("FAIL Gemma native quote control tokens", gemmaQuoteTokens);
 }
+const xmlTools = createDefaultTools();
+const xmlRead = '<tool_call>\n<function=read_file>\n<parameter=path>\nsrc/main.ts\n</parameter>\n<parameter=offset>\n2\n</parameter>\n</function>\n</tool_call>';
+const xmlParsed = parseToolCalls(xmlRead, xmlTools.definitions());
+if (xmlParsed.errors.length || xmlParsed.calls[0]?.arguments.path !== "src/main.ts" || xmlParsed.calls[0]?.arguments.offset !== 2) {
+  failures++; console.error("FAIL schema-typed Qwen XML call", xmlParsed);
+}
+const xmlContent = '  const text = "</tool_call>";\n{notJSON:true}\n<|tool_call>call:read_file{path:"literal.txt"}<tool_call|>\n';
+const xmlCreate = `<tool_call>\n<function=create_file>\n<parameter=path>\nindex.ts\n</parameter>\n<parameter=content>\n${xmlContent}\n</parameter>\n</function>\n</tool_call>`;
+const xmlCreated = parseToolCalls(xmlCreate, xmlTools.definitions());
+if (xmlCreated.errors.length || xmlCreated.calls[0]?.arguments.content !== xmlContent) {
+  failures++; console.error("FAIL raw XML file content must be preserved", xmlCreated);
+}
+const xmlFilter = new ToolCallStreamFilter();
+const xmlVisible = Array.from(`Before ${xmlCreate} after`).map((chunk) => xmlFilter.push(chunk)).join("") + xmlFilter.flush();
+if (xmlVisible !== "Before  after") { failures++; console.error("FAIL split Qwen XML streaming suppression", xmlVisible); }
+const xmlUnclosed = parseToolCalls(xmlCreate.slice(0, -"</tool_call>".length), xmlTools.definitions());
+if (xmlUnclosed.calls.length || !xmlUnclosed.errors.length || xmlUnclosed.issues[0]?.toolName !== "create_file") {
+  failures++; console.error("FAIL unclosed XML must never be recovered from embedded file JSON", xmlUnclosed);
+}
+xmlTools.dispose();
 const multiline = parseToolCalls(`<tool_call>{"name":"edit_file","arguments":{"path":"src/a.js","oldText":"return old;
 ","newText":"return next;
 ",}}</tool_call>`);

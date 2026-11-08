@@ -1,6 +1,6 @@
 {
   "name": "tinycode-cli",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "A terminal coding agent for local models via llama.cpp, Ollama, and compatible APIs",
   "type": "module",
   "bin": {

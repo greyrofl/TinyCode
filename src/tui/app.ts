@@ -72,7 +72,7 @@ const COMMANDS: Array<{ name: string; description: string }> = [
   { name: "tools", description: "show available agent tools" },
   { name: "reasoning", description: "toggle thinking output" },
   { name: "think", description: "choose the model's thinking mode" },
-  { name: "inference", description: "Standard, N-gram, or Gemma MTP profile" },
+  { name: "inference", description: "Standard, N-gram, embedded Qwen or Gemma-sidecar MTP" },
   { name: "context", description: "set the engine's context window" },
   { name: "parallel", description: "check/set local engine parallel" },
   { name: "profile", description: "tools: auto, plan, edit, full; model restores default" },
@@ -1043,9 +1043,7 @@ export class TinyCodeTui {
             const parsed = /^(\S+)(?:\s+([\s\S]+))?$/.exec(argument);
             if (!parsed || !isInferenceProfile(parsed[1])) throw new Error("Usage: /inference standard|ngram|mtp-2|mtp-3|mtp-6|mtp-8 [draft.gguf]");
             const draft = parsed[2]?.trim().replace(/^(["'])([\s\S]*)\1$/, "$2");
-            if (isMtpProfile(parsed[1]) && !draft && !this.options.chat.currentInferenceDraftModel) {
-              await this.openDraftModelPicker(parsed[1]);
-            } else await this.applyInferenceProfile(parsed[1], draft);
+            await this.selectInferenceProfile(parsed[1], draft);
           } else await this.openInferencePicker();
           break;
         case "context":
@@ -1202,13 +1200,14 @@ export class TinyCodeTui {
     this.continueModelSetup = setup;
     const support = await this.options.chat.inferenceSupport();
     const current = this.options.chat.currentInferenceProfile;
+    const source = support.mode === "embedded" ? "embedded GGUF head" : "Gemma MTP sidecar";
     const details: Record<InferenceProfileId, string> = {
       standard: "single target model · maximum compatibility",
       ngram: "prompt lookup speculation · no draft weights",
-      "mtp-2": "Gemma MTP sidecar · conservative draft depth",
-      "mtp-3": "Gemma MTP sidecar · recommended speed profile",
-      "mtp-6": "Gemma MTP sidecar · deeper experimental profile",
-      "mtp-8": "Gemma MTP sidecar · maximum experimental depth",
+      "mtp-2": `${source} · ${support.mode === "embedded" ? "recommended starting depth" : "conservative draft depth"}`,
+      "mtp-3": `${source} · ${support.mode === "embedded" ? "experimental depth" : "tested Gemma speed profile"}`,
+      "mtp-6": `${source} · deeper experimental depth`,
+      "mtp-8": `${source} · maximum experimental depth`,
     };
     this.picker = new Picker({
       title: "Inference profile",
@@ -1220,7 +1219,7 @@ export class TinyCodeTui {
         detail: details[profile],
         disabled: profile !== "standard" && (!support.direct || isMtpProfile(profile) && !support.mtp),
         tone: profile === "standard" ? "success" : profile === "ngram" ? "info"
-          : profile === "mtp-2" ? "accent" : profile === "mtp-3" ? "success"
+          : profile === "mtp-2" ? support.mode === "embedded" ? "success" : "accent" : profile === "mtp-3" ? "success"
             : profile === "mtp-6" ? "reasoning" : "warning",
       })),
       message: support.note ?? (support.draftModel
@@ -1235,6 +1234,7 @@ export class TinyCodeTui {
   private async openDraftModelPicker(profile: InferenceProfileId): Promise<void> {
     const support = await this.options.chat.inferenceSupport();
     if (!support.mtp) throw new Error(support.note ?? "This target model is not compatible with TinyCode's Gemma MTP presets.");
+    if (support.mode === "embedded") { await this.applyInferenceProfile(profile); return; }
     this.pendingInferenceProfile = profile;
     const candidates = await this.options.chat.listInferenceDraftModels();
     if (!candidates.length) {
@@ -1270,6 +1270,14 @@ export class TinyCodeTui {
     this.transcript.notice(this.options.chat.currentProvider === "llama.cpp"
       ? `Inference: ${inferenceProfileLabel(profile)}. It applies on the next managed llama.cpp model load.`
       : "Inference: Standard. Speculative profiles are controlled only by managed llama.cpp.", "info");
+  }
+
+  private async selectInferenceProfile(profile: InferenceProfileId, draftModel?: string): Promise<void> {
+    if (isMtpProfile(profile) && !draftModel && !this.options.chat.currentInferenceDraftModel) {
+      const support = await this.options.chat.inferenceSupport();
+      if (support.mode !== "embedded") { await this.openDraftModelPicker(profile); return; }
+    }
+    await this.applyInferenceProfile(profile, draftModel);
   }
 
   private async openContextPicker(capacity = this.contextCapacity, setup = false): Promise<void> {
@@ -1862,8 +1870,7 @@ export class TinyCodeTui {
         else this.continueModelSetup = false;
       } else if (kind === "inference") {
         if (!isInferenceProfile(item.value)) throw new Error(`Unknown inference profile: ${item.value}`);
-        if (isMtpProfile(item.value) && !this.options.chat.currentInferenceDraftModel) await this.openDraftModelPicker(item.value);
-        else await this.applyInferenceProfile(item.value);
+        await this.selectInferenceProfile(item.value);
       } else if (kind === "draft-model") {
         const profile = this.pendingInferenceProfile;
         if (!profile) throw new Error("MTP profile selection expired; reopen /inference.");
@@ -1996,6 +2003,9 @@ export class TinyCodeTui {
         }`,
         `Profile   ${this.options.chat.currentToolProfile}`,
         `Inference ${inferenceProfileLabel(this.options.chat.currentInferenceProfile)}${this.options.chat.currentInferenceDraftModel && isMtpProfile(this.options.chat.currentInferenceProfile) ? ` · ${path.basename(this.options.chat.currentInferenceDraftModel)}` : ""}`,
+        `Loaded MTP ${this.options.chat.loadedRunnerInfo?.inferenceMtpMode
+          ? `${this.options.chat.loadedRunnerInfo.inferenceMtpMode} · draft depth ${this.options.chat.loadedRunnerInfo.inferenceDraftMax}`
+          : "not active / no managed runner"}`,
         `MCP       ${Object.values(this.options.config.mcp.servers).filter((server) => server.enabled).length} configured`,
         `Prompt    ${this.options.promptSource ?? "built-in"}`,
         `Compact   ${session.meta.compaction
