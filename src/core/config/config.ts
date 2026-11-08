@@ -1,5 +1,6 @@
 import { configFile } from "../../util/paths.js";
 import { pathExists, readJson, writeJsonAtomic } from "../../util/fs.js";
+import { isInferenceProfile, type InferencePreference } from "../inference-profile.js";
 
 export type ThemeName = "dark" | "light";
 export type ProviderId = string;
@@ -36,7 +37,7 @@ export interface Config {
   providerModels: Record<string, string>;
   /** User-declared external APIs; model limits/capabilities are never guessed. */
   providers: Record<string, OpenAICompatibleProviderConfig>;
-  models: Record<string, { thinking: string; numCtx: number; sampling?: SamplingConfig }>;
+  models: Record<string, ModelPreference>;
   llama: {
     executable: string | null;
     autoInstall: boolean;
@@ -63,6 +64,13 @@ export interface Config {
     microBatchSize: number;
     threads: number;
     parallel: number;
+    speculativeType: "none" | "ngram-mod" | "draft-mtp";
+    speculativeDraftModel: string | null;
+    speculativeDraftDevice: "auto" | "cpu";
+    speculativeDraftMax: number;
+    speculativeDraftCacheTypeK: string;
+    speculativeDraftCacheTypeV: string;
+    logFile: string | null;
   };
   ollama: {
     /** Overall request timeout. Loading a model can take a while on first use. */
@@ -158,6 +166,13 @@ export interface Config {
   };
 }
 
+export interface ModelPreference {
+  thinking: string;
+  numCtx: number;
+  sampling?: SamplingConfig;
+  inference?: InferencePreference;
+}
+
 export interface SamplingConfig {
   profile: "auto" | "model" | "qwen3-thinking" | "qwen3-fast" | "custom";
   temperature?: number;
@@ -183,6 +198,8 @@ export function defaultConfig(): Config {
       loadMode: process.platform === "win32" ? "none" : "auto", fitTargetMiB: 512,
       flashAttention: "auto", cacheTypeK: "f16", cacheTypeV: "f16",
       batchSize: 256, microBatchSize: 256, threads: 0, parallel: 1,
+      speculativeType: "none", speculativeDraftModel: null, speculativeDraftDevice: "auto", speculativeDraftMax: 3,
+      speculativeDraftCacheTypeK: "q8_0", speculativeDraftCacheTypeV: "q8_0", logFile: null,
     },
     ollama: {
       baseUrl: "http://127.0.0.1:11434",
@@ -216,7 +233,7 @@ export function defaultConfig(): Config {
       commandTimeoutMs: 120_000,
       maxOutputChars: 24_000,
       promptFile: null,
-      maxStalledSteps: 3,
+      maxStalledSteps: 5,
       profile: "auto",
       profileByModel: true,
       stopAfterToolCall: false,
@@ -362,6 +379,12 @@ export function mergeConfig(raw: unknown): Config {
     config.llama.microBatchSize = Math.min(config.llama.batchSize, config.llama.microBatchSize);
     config.llama.threads = Math.round(readNumber(llama.threads, config.llama.threads, 0));
     config.llama.parallel = Math.min(16, Math.round(readNumber(llama.parallel, config.llama.parallel, 1)));
+    if (["none", "ngram-mod", "draft-mtp"].includes(String(llama.speculativeType))) config.llama.speculativeType = llama.speculativeType as Config["llama"]["speculativeType"];
+    config.llama.speculativeDraftModel = typeof llama.speculativeDraftModel === "string" && llama.speculativeDraftModel.trim() ? llama.speculativeDraftModel.trim() : null;
+    if (["auto", "cpu"].includes(String(llama.speculativeDraftDevice))) config.llama.speculativeDraftDevice = llama.speculativeDraftDevice as Config["llama"]["speculativeDraftDevice"];
+    config.llama.speculativeDraftMax = Math.min(16, Math.round(readNumber(llama.speculativeDraftMax, config.llama.speculativeDraftMax, 1)));
+    for (const key of ["speculativeDraftCacheTypeK", "speculativeDraftCacheTypeV"] as const) if (cacheTypes.includes(String(llama[key]))) config.llama[key] = String(llama[key]);
+    config.llama.logFile = typeof llama.logFile === "string" && llama.logFile.trim() ? llama.logFile.trim() : null;
   }
 
   if (isObject(raw.ollama)) {
@@ -405,6 +428,7 @@ export function mergeConfig(raw: unknown): Config {
         thinking: readString(preference.thinking, config.generation.thinking),
         numCtx: Math.round(readNumber(preference.numCtx, config.generation.numCtx, 256)),
         sampling: parseSampling(preference.sampling, config.generation.samplingProfile),
+        inference: parseInferencePreference(preference.inference),
       };
     }
   }
@@ -510,6 +534,13 @@ function parseSampling(value: unknown, fallback: SamplingConfig["profile"]): Sam
     ? value.profile as SamplingConfig["profile"] : fallback;
   const optional = (key: string): number | undefined => typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] as number : undefined;
   return { profile, temperature: optional("temperature"), topP: optional("topP"), topK: optional("topK"), minP: optional("minP"), repeatPenalty: optional("repeatPenalty"), presencePenalty: optional("presencePenalty") };
+}
+
+function parseInferencePreference(value: unknown): InferencePreference | undefined {
+  if (typeof value === "string") return isInferenceProfile(value) ? { profile: value } : undefined;
+  if (!isObject(value) || !isInferenceProfile(value.profile)) return undefined;
+  const draftModel = typeof value.draftModel === "string" && value.draftModel.trim() ? value.draftModel.trim() : undefined;
+  return { profile: value.profile, ...(draftModel ? { draftModel } : {}) };
 }
 
 function applyEnvironment(config: Config): void {

@@ -327,11 +327,15 @@ export class Transcript {
     if (message.outcome === "blocked") lines.push([{ text: "  blocked · task not completed", style: { fg: palette.warn } }]);
 
     if (message.usage) {
+      const requests = message.usage.modelRequests;
+      const cumulative = requests !== undefined && requests > 1 ? "Σ" : "";
       const parts = [
-        `${formatCompactNumber(message.usage.promptTokens)} in`,
-        `${formatCompactNumber(message.usage.completionTokens)} out`,
+        "model traffic",
+        ...(requests !== undefined ? [`${requests} req`] : []),
+        `${cumulative}${formatCompactNumber(message.usage.promptTokens)} in`,
+        `${cumulative}${formatCompactNumber(message.usage.completionTokens)} out`,
       ];
-      if (message.usage.tokensPerSecond) parts.push(`${message.usage.tokensPerSecond.toFixed(1)} tok/s`);
+      if (message.usage.tokensPerSecond) parts.push(`last ${message.usage.tokensPerSecond.toFixed(1)} tok/s`);
       lines.push([{ text: truncateWidth(`  ${parts.join(" · ")}`, width), style: { fg: palette.faint } }]);
     }
 

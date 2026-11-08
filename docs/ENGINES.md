@@ -17,6 +17,16 @@
 Настройки context/thinking/sampling разделены ключами `llama.cpp::<model>` и
 старыми Ollama model ids в `models`.
 
+В ветке 0.7 к model preference добавлен inference profile. После выбора модели
+TUI предлагает `Standard`, `N-gram` и Gemma MTP с глубиной 2/3/6/8. Изменение
+профиля не загружает веса сразу: managed llama-server получает новую launch
+signature при следующем prompt. Совпадающая signature переиспользует runner,
+отличающаяся вызывает один controlled reload.
+
+MTP sidecar ищется отдельно от selectable target-моделей. Он должен быть
+локальным совместимым GGUF; TinyCode не скачивает его. Чужой llama-server не
+перенастраивается inference-профилем — параметры задаёт его владелец.
+
 При смене Ollama → llama.cpp TinyCode выгружает только выбранный Ollama runner и
 ждёт освобождения VRAM. Сам daemon и другие загруженные в нём модели не
 останавливаются. При обратной смене завершается только owned llama-server.

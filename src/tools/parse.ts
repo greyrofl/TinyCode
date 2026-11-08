@@ -137,6 +137,10 @@ function canonicalNativeName(name: string): string {
 }
 
 function nativeCall(body: string): ParsedToolCall {
+  // Some Gemma llama.cpp templates surface the quote control token literally
+  // inside native DSL arrays: [<|"|>a.ts<|"|>]. It is a protocol artifact,
+  // not project content, and maps back to an ordinary JSON double quote.
+  body = body.replaceAll('<|"|>', '"');
   const match = /^\s*call:\s*([^\s{]+)\s*(\{[\s\S]*\})\s*$/.exec(body);
   if (!match) throw new Error("invalid native tool-call DSL.");
   return { name: canonicalNativeName(match[1]!), arguments: parseJsonObject(quoteNativeKeys(match[2]!)) };

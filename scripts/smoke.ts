@@ -159,6 +159,36 @@ for (const width of [40, 80, 120]) {
   }
 }
 
+const richPicker = new Picker({
+  title: "Inference and model profile with an intentionally long title",
+  message: "This explanatory message is intentionally long so narrow picker layouts must wrap it without crossing either border or silently losing the selected option details.",
+  messageStyle: "info",
+  footer: "enter apply profile · esc close menu · ↑↓ move through every available option",
+  items: [
+    { value: "heading", label: "Managed llama.cpp profiles", detail: "4 profiles", heading: true, disabled: true, tone: "accent" },
+    {
+      value: "mtp-3",
+      label: "Gemma 4 26B A4B MTP 3x profile with a long local model name",
+      detail: "Q8_0 sidecar · 32,768 context · hybrid RAM/VRAM · recommended speed profile",
+      nested: true,
+      tone: "success",
+    },
+    { value: "mtp-8", label: "MTP 8x", detail: "experimental depth with lower acceptance", nested: true, tone: "warning" },
+  ],
+  selected: "mtp-3",
+  showFilter: false,
+});
+for (const width of [24, 32, 40, 80]) {
+  const rendered = renderPicker(richPicker, width, 20, palette);
+  check(`rich-picker@${width}x20`, rendered.lines, width);
+  const text = rendered.lines.flat().map((span) => span.text).join(" ");
+  if (!text.includes("Q8_0") || !rendered.lines.flat().some((span) => span.style?.fg === palette.success)) {
+    failures++;
+    console.error(`FAIL rich-picker@${width}: selected detail preview or semantic color missing`);
+  }
+}
+console.log("ok wrapped picker descriptions / selected detail preview / semantic colors");
+
 const contextPicker = new Picker({
   title: "Ollama context window",
   message: "Max context: ≈65,536 tokens (memory estimate). Loaded: 8,192 · mixed. RAM ctx means model + context are not fully VRAM-resident.",
@@ -313,22 +343,24 @@ for (const [width, height] of [
   console.log(`ok welcome@${width}x${height}`);
 }
 
-const approvalFrame = renderTui(80, 24, true, false, {
-  tool: "execute_command",
-  summary: "npm test -- --runInBand",
-  detail: "Working directory: C:\\Users\\example\\project",
-});
-for (const [index, actual] of approvalFrame.frameWidths.entries()) {
-  if (actual > 80) {
+for (const width of [24, 32, 80]) {
+  const approvalFrame = renderTui(width, 24, true, false, {
+    tool: "execute_command",
+    summary: "npm test -- --runInBand with a deliberately long approval summary",
+    detail: "Working directory: C:\\Users\\example\\project-with-a-very-long-folder-name",
+  });
+  for (const [index, actual] of approvalFrame.frameWidths.entries()) {
+    if (actual > width) {
+      failures++;
+      console.error(`FAIL approval@${width} row ${index}: width ${actual} > ${width}`);
+    }
+  }
+  if (approvalFrame.cursor !== null) {
     failures++;
-    console.error(`FAIL approval row ${index}: width ${actual} > 80`);
+    console.error(`FAIL approval@${width} dialog should hide the cursor`);
   }
 }
-if (approvalFrame.cursor !== null) {
-  failures++;
-  console.error("FAIL approval dialog should hide the cursor");
-}
-console.log("ok approval dialog");
+console.log("ok wrapped and colored approval dialog");
 
 // Key parser: arrows, modifiers, bracketed paste, control chords and lone Esc.
 const keys: Key[] = [];
@@ -428,6 +460,12 @@ const unclosed = parseToolCalls('<tool_call>{"name":"read_file","arguments":{}}'
 if (unclosed.errors.length > 0 || unclosed.calls[0]?.name !== "read_file") {
   failures++;
   console.error("FAIL balanced unclosed tool call should be recovered", unclosed);
+}
+const gemmaQuoteTokens = parseToolCalls('<|tool_call>call:read_files{paths:[<|"|>package.json<|"|>,<|"|>README.md<|"|>]}<tool_call|>');
+if (gemmaQuoteTokens.errors.length > 0 || gemmaQuoteTokens.calls[0]?.name !== "read_files" ||
+  JSON.stringify(gemmaQuoteTokens.calls[0]?.arguments.paths) !== JSON.stringify(["package.json", "README.md"])) {
+  failures++;
+  console.error("FAIL Gemma native quote control tokens", gemmaQuoteTokens);
 }
 const multiline = parseToolCalls(`<tool_call>{"name":"edit_file","arguments":{"path":"src/a.js","oldText":"return old;
 ","newText":"return next;

@@ -5,9 +5,10 @@ import type { Config } from "./config/config.js";
 import { LlamaInstaller, type LlamaInstallDependencies } from "./llama-install.js";
 import { readHardwareMemory, runtimeWait, type HardwareMemoryStatus, type ParallelStatus } from "./runtime.js";
 import type { LoadModelOptions, RunningModelInfo } from "./provider/types.js";
+import { inferenceProfileFromSpeculative, type InferenceRuntimeOptions } from "./inference-profile.js";
 import { GgufCatalog } from "./provider/gguf.js";
 import type { LocalRuntime } from "./runtime.js";
-import { captureProcess, localRuntimeUrl } from "./runtime-process.js";
+import { captureProcess, expandLocalPath, localRuntimeUrl } from "./runtime-process.js";
 
 export interface LlamaRuntimeDependencies {
   fetch?: typeof fetch;
@@ -39,11 +40,12 @@ export class LlamaRuntime implements LocalRuntime {
   private apiKey: string | null = null;
   private alias = "";
   private loading: { key: string; task: Promise<RunningModelInfo> } | null = null;
+  private runningInferenceSignature = "";
   private logs = "";
   private readonly buffers = new Map<string, number>();
   private readonly helpCache = new Map<string, string>();
 
-  constructor(readonly config: Config["llama"], cwd: string, private readonly dependencies: LlamaRuntimeDependencies = {}) {
+  constructor(readonly config: Config["llama"], private readonly cwd: string, private readonly dependencies: LlamaRuntimeDependencies = {}) {
     this.installer = dependencies.installer ?? new LlamaInstaller(config, { ...dependencies.install, notice: dependencies.notice });
     this.catalog = new GgufCatalog(config, cwd);
   }
@@ -115,21 +117,43 @@ export class LlamaRuntime implements LocalRuntime {
   async loadModel(options: LoadModelOptions): Promise<RunningModelInfo> {
     if (!Number.isInteger(options.numCtx) || options.numCtx < 256) throw new Error("A finite explicit llama.cpp context size is required.");
     options.signal?.throwIfAborted();
-    const key = `${options.model}:${options.numCtx}`;
+    const inference = options.inference ?? {
+      profile: inferenceProfileFromSpeculative(this.config.speculativeType, this.config.speculativeDraftMax),
+      speculativeType: this.config.speculativeType,
+      ...(this.config.speculativeDraftModel ? { draftModel: this.config.speculativeDraftModel } : {}),
+      draftDevice: this.config.speculativeDraftDevice,
+      draftMax: this.config.speculativeDraftMax,
+      draftCacheTypeK: this.config.speculativeDraftCacheTypeK,
+      draftCacheTypeV: this.config.speculativeDraftCacheTypeV,
+    } satisfies InferenceRuntimeOptions;
+    const inferenceSignature = JSON.stringify(inference);
+    const key = `${options.model}:${options.numCtx}:${inferenceSignature}`;
     if (this.loading) {
       if (this.loading.key !== key) throw new Error("Another llama.cpp model/context is loading.");
       return this.loading.task;
     }
-    const task = this.load(options);
+    const task = this.load(options, inference, inferenceSignature);
     this.loading = { key, task };
     try { return await task; } finally { this.loading = null; }
   }
 
-  private async load(options: LoadModelOptions): Promise<RunningModelInfo> {
+  private async load(options: LoadModelOptions, inference: InferenceRuntimeOptions, inferenceSignature: string): Promise<RunningModelInfo> {
     const existing = await this.getRunningModel(options.model, options.signal);
-    if (existing?.contextLength === options.numCtx) return existing;
+    if (existing?.contextLength === options.numCtx) {
+      if (!this.owned && inference.speculativeType !== "none") {
+        throw new Error("Inference profiles cannot reconfigure an external llama-server. Start it with matching speculative settings or use TinyCode-managed llama.cpp.");
+      }
+      if (!this.owned || this.runningInferenceSignature === inferenceSignature) return existing;
+    }
+    if (inference.speculativeType === "draft-mtp" && !inference.draftModel) {
+      throw new Error("An MTP inference profile requires a local draft sidecar GGUF.");
+    }
     if (await this.available() && !this.owned) throw new Error("An external llama-server is already running on the configured port with a different model/context. TinyCode will not stop it. Use its exact context or a separate local port.");
-    const [file, details] = await Promise.all([this.catalog.resolve(options.model), this.catalog.getDetails(options.model)]);
+    const [file, details, draftFile] = await Promise.all([
+      this.catalog.resolve(options.model),
+      this.catalog.getDetails(options.model),
+      inference.speculativeType === "draft-mtp" && inference.draftModel ? this.catalog.resolve(inference.draftModel) : Promise.resolve(null),
+    ]);
     if (options.numCtx > (details.contextLength ?? 1_048_576)) throw new Error(`GGUF context limit is ${details.contextLength} tokens.`);
     if (this.child) {
       const before = await this.memoryStatus();
@@ -149,6 +173,12 @@ export class LlamaRuntime implements LocalRuntime {
     if (gpuLayers === "auto" && !/\bauto\b/.test(gpuHelp)) {
       throw new Error("Installed llama-server does not support automatic GPU offload. Update llama.cpp or set llama.gpuLayers to an explicit layer count; no model was loaded.");
     }
+    if (inference.speculativeType !== "none" && !help.includes("--spec-type")) {
+      throw new Error(`Installed llama-server does not support inference profile ${inference.profile}. Update llama.cpp or select Standard.`);
+    }
+    if (inference.speculativeType === "draft-mtp" && !help.includes("--spec-draft-model")) {
+      throw new Error("Installed llama-server does not support MTP draft models. Update llama.cpp or select Standard.");
+    }
     await (this.dependencies.checkPort ?? (() => checkPort(this.baseUrl)))();
     options.signal?.throwIfAborted();
     const url = new URL(this.baseUrl);
@@ -164,6 +194,15 @@ export class LlamaRuntime implements LocalRuntime {
       ...(help.includes("--no-webui") ? ["--no-webui"] : []), ...(help.includes("--no-agent") ? ["--no-agent"] : []),
       ...(this.config.cpuMoe ? ["--cpu-moe"] : []), ...(this.config.kvOffload ? [] : ["--no-kv-offload"]),
       ...(this.config.threads > 0 ? ["--threads", String(this.config.threads)] : []),
+      ...(inference.speculativeType === "none" ? [] : ["--spec-type", inference.speculativeType]),
+      ...(inference.speculativeType !== "draft-mtp" ? [] : [
+        "--spec-draft-model", draftFile!,
+        "--spec-draft-n-max", String(inference.draftMax),
+        "--spec-draft-type-k", inference.draftCacheTypeK,
+        "--spec-draft-type-v", inference.draftCacheTypeV,
+        ...(inference.draftDevice === "cpu" ? ["--spec-draft-device", "none", "--spec-draft-ngl", "0"] : []),
+      ]),
+      ...(this.config.logFile ? ["--log-file", expandLocalPath(this.config.logFile, this.cwd)] : []),
     ];
     this.apiKey = randomBytes(24).toString("hex");
     // Inherited llama settings must not secretly enable model downloads, server tools or tunnels.
@@ -190,7 +229,8 @@ export class LlamaRuntime implements LocalRuntime {
     };
     child.stdout?.on("data", log); child.stderr?.on("data", log);
     child.once("error", (error) => { failure = error; });
-    this.running = { id: options.model, sizeBytes: details.sizeBytes ?? 0, sizeVramBytes: 0, contextLength: options.numCtx, memoryKnown: false };
+    this.runningInferenceSignature = inferenceSignature;
+    this.running = { id: options.model, sizeBytes: details.sizeBytes ?? 0, sizeVramBytes: 0, contextLength: options.numCtx, memoryKnown: false, inferenceProfile: inference.profile };
     try {
       const deadline = Date.now() + this.config.startupTimeoutMs;
       while (!(await this.available())) {
@@ -236,7 +276,7 @@ export class LlamaRuntime implements LocalRuntime {
         if (!sent || child.exitCode !== null || child.signalCode !== null) finish();
       });
     }
-    this.child = null; this.running = null; this.apiKey = null; this.alias = "";
+    this.child = null; this.running = null; this.runningInferenceSignature = ""; this.apiKey = null; this.alias = "";
   }
 
   async memoryStatus(): Promise<HardwareMemoryStatus | null> {

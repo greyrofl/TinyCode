@@ -122,9 +122,11 @@ export function createDefaultTools(): ToolRegistry {
     .register(gitStatusTool)
     .register(gitDiffTool)
     .register(gitLogTool)
-    .register(gitShowTool)
+    .register(gitShowTool);
+  if (process.env.TINYCODE_DISABLE_NETWORK_TOOLS !== "1") registry
     .register(fetchUrlTool)
-    .register(webSearchTool)
+    .register(webSearchTool);
+  registry
     .register(executeCommandTool)
     .register(verifyTool)
     .register(diagnosticsTool)

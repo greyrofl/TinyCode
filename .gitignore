@@ -1,8 +1,24 @@
 node_modules/
 dist/
+coverage/
+*.tsbuildinfo
 *.log
 *.tgz
 .DS_Store
+.env
+.env.*
+
+# Model weights and generated benchmark state never belong in TinyCode.
+*.gguf
+*.safetensors
+/models/
+/runs/
+/jobs/
+/sweeps/
+
+# TinyBench is maintained as a separate companion project. A local checkout may
+# live beside the TinyCode sources without becoming part of this repository.
+/TinyBench/
 
 # Local website work and scratch test files are not part of the package.
 site/

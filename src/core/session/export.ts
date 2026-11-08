@@ -66,9 +66,11 @@ export function sessionToMarkdown(session: Session): string {
     if (message.aborted) lines.push("> Aborted", "");
     if (message.usage) {
       const usage = message.usage;
-      const speed = usage.tokensPerSecond ? ` · ${usage.tokensPerSecond.toFixed(1)} tok/s` : "";
+      const requests = usage.modelRequests ? ` · ${usage.modelRequests} model request${usage.modelRequests === 1 ? "" : "s"}` : "";
+      const cumulative = usage.modelRequests !== undefined && usage.modelRequests > 1 ? "Σ" : "";
+      const speed = usage.tokensPerSecond ? ` · last ${usage.tokensPerSecond.toFixed(1)} tok/s` : "";
       lines.push(
-        `<sub>${formatCompactNumber(usage.promptTokens)} in · ${formatCompactNumber(
+        `<sub>Model traffic${requests} · ${cumulative}${formatCompactNumber(usage.promptTokens)} in · ${cumulative}${formatCompactNumber(
           usage.completionTokens,
         )} out${speed}</sub>`,
         "",

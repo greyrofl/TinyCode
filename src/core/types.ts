@@ -3,6 +3,8 @@ export interface Usage {
   completionTokens: number;
   totalTokens: number;
   tokensPerSecond?: number;
+  /** Number of model requests accumulated into this assistant turn. */
+  modelRequests?: number;
 }
 
 export type StatusState =
@@ -33,12 +35,13 @@ export interface ContextUsage {
 }
 
 export function mergeUsage(current: Usage | undefined, next: Usage | undefined): Usage | undefined {
-  if (!current) return next;
+  if (!current) return next ? { ...next, modelRequests: next.modelRequests ?? 1 } : undefined;
   if (!next) return current;
   return {
     promptTokens: current.promptTokens + next.promptTokens,
     completionTokens: current.completionTokens + next.completionTokens,
     totalTokens: current.totalTokens + next.totalTokens,
     tokensPerSecond: next.tokensPerSecond ?? current.tokensPerSecond,
+    modelRequests: (current.modelRequests ?? 1) + (next.modelRequests ?? 1),
   };
 }

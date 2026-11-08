@@ -1,0 +1,934 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-08T13:27:53.576Z",
+  "title": "TinyCode local model efficiency observations",
+  "status": "research-single-seed",
+  "environment": {
+    "gpu": "NVIDIA RTX 3050 8 GB",
+    "context": 32768,
+    "execution": "sequential, cold cache, isolated offline workspaces"
+  },
+  "caveats": [
+    "Correctness ranks before speed; fast failed trials are not successful coding performance.",
+    "Most observations use one seed and are not a statistically stable leaderboard.",
+    "Runtime, quantization, cache type, draft depth and case set must match before comparing speeds.",
+    "No model weights or absolute local file paths are included in this dataset."
+  ],
+  "coreModelComparison": [
+    {
+      "runId": "20261107T192947Z",
+      "suite": "tinybench-core-10",
+      "model": "hf.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF:Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "ollama",
+      "inference": {
+        "id": "standard",
+        "label": "Standard"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": null,
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "py-config-precedence",
+        "py-route-investigation",
+        "py-untrusted-report",
+        "py-user-normalization-refactor",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context",
+        "ts-query-noop",
+        "ts-retry-after-feature",
+        "ts-slug-edit-recovery"
+      ],
+      "trials": 10,
+      "solved": 2,
+      "solvedRate": 0.2,
+      "outcomes": {
+        "partial": 8,
+        "solved": 2
+      },
+      "medianSolvedSeconds": 14.158,
+      "medianAllSeconds": 12.559,
+      "totalAgentSeconds": 139.318,
+      "weightedDecodeTokensPerSecond": 78.755,
+      "inputTokens": 259324,
+      "outputTokens": 4868,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 93,
+        "successful": 42,
+        "failed": 51
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 1,
+      "resources": {
+        "peakSystemRamGiB": 15.835,
+        "peakGpuGiB": 4.472,
+        "averageGpuUtilizationPercent": 62.5
+      }
+    },
+    {
+      "runId": "20261107T193300Z",
+      "suite": "tinybench-core-10",
+      "model": "hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "ollama",
+      "inference": {
+        "id": "standard",
+        "label": "Standard"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": null,
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "py-config-precedence",
+        "py-route-investigation",
+        "py-untrusted-report",
+        "py-user-normalization-refactor",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context",
+        "ts-query-noop",
+        "ts-retry-after-feature",
+        "ts-slug-edit-recovery"
+      ],
+      "trials": 10,
+      "solved": 4,
+      "solvedRate": 0.4,
+      "outcomes": {
+        "partial": 6,
+        "solved": 4
+      },
+      "medianSolvedSeconds": 84.374,
+      "medianAllSeconds": 88.565,
+      "totalAgentSeconds": 1213.781,
+      "weightedDecodeTokensPerSecond": 8.343,
+      "inputTokens": 286771,
+      "outputTokens": 8764,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 89,
+        "successful": 53,
+        "failed": 36
+      },
+      "changedFiles": 6,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 18.928,
+        "peakGpuGiB": 7.744,
+        "averageGpuUtilizationPercent": 39.51
+      }
+    },
+    {
+      "runId": "20261107T195408Z",
+      "suite": "tinybench-core-10",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "ollama",
+      "inference": {
+        "id": "standard",
+        "label": "Standard"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": null,
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "py-config-precedence",
+        "py-route-investigation",
+        "py-untrusted-report",
+        "py-user-normalization-refactor",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context",
+        "ts-query-noop",
+        "ts-retry-after-feature",
+        "ts-slug-edit-recovery"
+      ],
+      "trials": 10,
+      "solved": 8,
+      "solvedRate": 0.8,
+      "outcomes": {
+        "solved": 8,
+        "timeout": 2
+      },
+      "medianSolvedSeconds": 246.203,
+      "medianAllSeconds": 264.678,
+      "totalAgentSeconds": 3053.642,
+      "weightedDecodeTokensPerSecond": 18.794,
+      "inputTokens": 363947,
+      "outputTokens": 44905,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 82,
+        "successful": 59,
+        "failed": 23
+      },
+      "changedFiles": 7,
+      "falseSuccess": 0,
+      "falseFailure": 1,
+      "resources": {
+        "peakSystemRamGiB": 29.465,
+        "peakGpuGiB": 7.811,
+        "averageGpuUtilizationPercent": 46.23
+      }
+    },
+    {
+      "runId": "20261108T094509Z",
+      "suite": "tinybench-core-10",
+      "model": "hf.co/NotCherry/Qwen3.5-0.8B-weight-space-programming-GGUF:Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "ollama",
+      "inference": {
+        "id": "standard",
+        "label": "Standard"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "f16",
+        "draftDevice": null,
+        "fitTargetMiB": 512,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "py-config-precedence",
+        "py-route-investigation",
+        "py-untrusted-report",
+        "py-user-normalization-refactor",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context",
+        "ts-query-noop",
+        "ts-retry-after-feature",
+        "ts-slug-edit-recovery"
+      ],
+      "trials": 10,
+      "solved": 1,
+      "solvedRate": 0.1,
+      "outcomes": {
+        "partial": 9,
+        "solved": 1
+      },
+      "medianSolvedSeconds": 5.132,
+      "medianAllSeconds": 5.824,
+      "totalAgentSeconds": 82.995,
+      "weightedDecodeTokensPerSecond": 103.276,
+      "inputTokens": 185206,
+      "outputTokens": 4752,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 63,
+        "successful": 26,
+        "failed": 37
+      },
+      "changedFiles": 1,
+      "falseSuccess": 1,
+      "falseFailure": 1,
+      "resources": {
+        "peakSystemRamGiB": 12.136,
+        "peakGpuGiB": 2.143,
+        "averageGpuUtilizationPercent": 39.57
+      }
+    }
+  ],
+  "inferenceExperiments": [
+    {
+      "runId": "20261108T070759Z",
+      "suite": "single:py-route-investigation",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "ngram",
+        "label": "N-gram"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": null,
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-route-investigation"
+      ],
+      "trials": 1,
+      "solved": 1,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 1
+      },
+      "medianSolvedSeconds": 77.299,
+      "medianAllSeconds": 77.299,
+      "totalAgentSeconds": 77.299,
+      "weightedDecodeTokensPerSecond": 24.326,
+      "inputTokens": 41936,
+      "outputTokens": 496,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 7,
+        "successful": 5,
+        "failed": 2
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 29.736,
+        "peakGpuGiB": 7.627,
+        "averageGpuUtilizationPercent": 45.85
+      }
+    },
+    {
+      "runId": "20261108T071032Z",
+      "suite": "mtp-depth-3",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "ngram",
+        "label": "N-gram"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": null,
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 3,
+      "solved": 3,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 3
+      },
+      "medianSolvedSeconds": 117.897,
+      "medianAllSeconds": 117.897,
+      "totalAgentSeconds": 444.296,
+      "weightedDecodeTokensPerSecond": 24.086,
+      "inputTokens": 255450,
+      "outputTokens": 5830,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 42,
+        "successful": 30,
+        "failed": 12
+      },
+      "changedFiles": 3,
+      "falseSuccess": 0,
+      "falseFailure": 2,
+      "resources": {
+        "peakSystemRamGiB": 31.425,
+        "peakGpuGiB": 7.587,
+        "averageGpuUtilizationPercent": 49.84
+      }
+    },
+    {
+      "runId": "20261108T071841Z",
+      "suite": "runtime-control-4",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "standard",
+        "label": "Standard"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": null,
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "py-route-investigation",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 4,
+      "solved": 2,
+      "solvedRate": 0.5,
+      "outcomes": {
+        "partial": 2,
+        "solved": 2
+      },
+      "medianSolvedSeconds": 197.029,
+      "medianAllSeconds": 152.85,
+      "totalAgentSeconds": 622.85,
+      "weightedDecodeTokensPerSecond": 24.09,
+      "inputTokens": 249546,
+      "outputTokens": 8950,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 42,
+        "successful": 20,
+        "failed": 22
+      },
+      "changedFiles": 2,
+      "falseSuccess": 0,
+      "falseFailure": 1,
+      "resources": {
+        "peakSystemRamGiB": 29.823,
+        "peakGpuGiB": 7.536,
+        "averageGpuUtilizationPercent": 48.92
+      }
+    },
+    {
+      "runId": "20261108T073938Z",
+      "suite": "single:py-route-investigation",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-3",
+        "label": "MTP 3x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": null,
+        "draftDevice": "cpu",
+        "fitTargetMiB": null,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-route-investigation"
+      ],
+      "trials": 1,
+      "solved": 1,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 1
+      },
+      "medianSolvedSeconds": 213.95,
+      "medianAllSeconds": 213.95,
+      "totalAgentSeconds": 213.95,
+      "weightedDecodeTokensPerSecond": 18.731,
+      "inputTokens": 38347,
+      "outputTokens": 2865,
+      "draftAcceptanceRate": 0.7829,
+      "acceptedDraftTokens": 2005,
+      "draftedTokens": 2561,
+      "tools": {
+        "total": 6,
+        "successful": 4,
+        "failed": 2
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 26.907,
+        "peakGpuGiB": 7.332,
+        "averageGpuUtilizationPercent": 37.85
+      }
+    },
+    {
+      "runId": "20261108T074433Z",
+      "suite": "single:py-route-investigation",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-3",
+        "label": "MTP 3x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-route-investigation"
+      ],
+      "trials": 1,
+      "solved": 1,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 1
+      },
+      "medianSolvedSeconds": 68.82,
+      "medianAllSeconds": 68.82,
+      "totalAgentSeconds": 68.82,
+      "weightedDecodeTokensPerSecond": 32.224,
+      "inputTokens": 37053,
+      "outputTokens": 404,
+      "draftAcceptanceRate": 0.7249,
+      "acceptedDraftTokens": 274,
+      "draftedTokens": 378,
+      "tools": {
+        "total": 6,
+        "successful": 4,
+        "failed": 2
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 25.523,
+        "peakGpuGiB": 6.768,
+        "averageGpuUtilizationPercent": 47.37
+      }
+    },
+    {
+      "runId": "20261108T074614Z",
+      "suite": "mtp-depth-3",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-3",
+        "label": "MTP 3x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 3,
+      "solved": 2,
+      "solvedRate": 0.6667,
+      "outcomes": {
+        "partial": 1,
+        "solved": 2
+      },
+      "medianSolvedSeconds": 148.615,
+      "medianAllSeconds": 187.881,
+      "totalAgentSeconds": 485.112,
+      "weightedDecodeTokensPerSecond": 33.533,
+      "inputTokens": 262888,
+      "outputTokens": 8636,
+      "draftAcceptanceRate": 0.7567,
+      "acceptedDraftTokens": 5970,
+      "draftedTokens": 7889,
+      "tools": {
+        "total": 41,
+        "successful": 30,
+        "failed": 11
+      },
+      "changedFiles": 2,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 27.068,
+        "peakGpuGiB": 6.837,
+        "averageGpuUtilizationPercent": 42.47
+      }
+    },
+    {
+      "runId": "20261108T075549Z",
+      "suite": "single:py-route-investigation",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-5",
+        "label": "MTP 5x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-route-investigation"
+      ],
+      "trials": 1,
+      "solved": 1,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 1
+      },
+      "medianSolvedSeconds": 69.994,
+      "medianAllSeconds": 69.994,
+      "totalAgentSeconds": 69.994,
+      "weightedDecodeTokensPerSecond": 28.79,
+      "inputTokens": 36993,
+      "outputTokens": 385,
+      "draftAcceptanceRate": 0.5714,
+      "acceptedDraftTokens": 280,
+      "draftedTokens": 490,
+      "tools": {
+        "total": 6,
+        "successful": 4,
+        "failed": 2
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 25.405,
+        "peakGpuGiB": 6.822,
+        "averageGpuUtilizationPercent": 44.26
+      }
+    },
+    {
+      "runId": "20261108T075756Z",
+      "suite": "single:py-route-investigation",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "standard",
+        "label": "Standard"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": null,
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-route-investigation"
+      ],
+      "trials": 1,
+      "solved": 1,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 1
+      },
+      "medianSolvedSeconds": 86.59,
+      "medianAllSeconds": 86.59,
+      "totalAgentSeconds": 86.59,
+      "weightedDecodeTokensPerSecond": 22.994,
+      "inputTokens": 31977,
+      "outputTokens": 704,
+      "draftAcceptanceRate": null,
+      "acceptedDraftTokens": null,
+      "draftedTokens": null,
+      "tools": {
+        "total": 5,
+        "successful": 3,
+        "failed": 2
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 25.385,
+        "peakGpuGiB": 6.234,
+        "averageGpuUtilizationPercent": 52.14
+      }
+    },
+    {
+      "runId": "20261108T082633Z",
+      "suite": "single:py-route-investigation",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-3",
+        "label": "MTP 3x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 8192,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-route-investigation"
+      ],
+      "trials": 1,
+      "solved": 1,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 1
+      },
+      "medianSolvedSeconds": 80.58,
+      "medianAllSeconds": 80.58,
+      "totalAgentSeconds": 80.58,
+      "weightedDecodeTokensPerSecond": 23.184,
+      "inputTokens": 37045,
+      "outputTokens": 408,
+      "draftAcceptanceRate": 0.7413,
+      "acceptedDraftTokens": 278,
+      "draftedTokens": 375,
+      "tools": {
+        "total": 6,
+        "successful": 4,
+        "failed": 2
+      },
+      "changedFiles": 0,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 26.225,
+        "peakGpuGiB": 7.092,
+        "averageGpuUtilizationPercent": 56.48
+      }
+    },
+    {
+      "runId": "20261108T090238Z",
+      "suite": "mtp-depth-3",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-6",
+        "label": "MTP 6x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 3,
+      "solved": 3,
+      "solvedRate": 1,
+      "outcomes": {
+        "solved": 3
+      },
+      "medianSolvedSeconds": 135.189,
+      "medianAllSeconds": 135.189,
+      "totalAgentSeconds": 446.147,
+      "weightedDecodeTokensPerSecond": 20.657,
+      "inputTokens": 231540,
+      "outputTokens": 5611,
+      "draftAcceptanceRate": 0.6026,
+      "acceptedDraftTokens": 4364,
+      "draftedTokens": 7242,
+      "tools": {
+        "total": 38,
+        "successful": 27,
+        "failed": 11
+      },
+      "changedFiles": 3,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 27.365,
+        "peakGpuGiB": 6.835,
+        "averageGpuUtilizationPercent": 48.8
+      }
+    },
+    {
+      "runId": "20261108T091019Z",
+      "suite": "mtp-depth-3",
+      "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
+      "agent": "tinycode",
+      "runtime": "llama.cpp",
+      "inference": {
+        "id": "mtp-8",
+        "label": "MTP 8x"
+      },
+      "settings": {
+        "context": 32768,
+        "outputTokens": 2048,
+        "cacheMode": "cold",
+        "kvCacheType": "q8_0",
+        "draftDevice": "auto",
+        "fitTargetMiB": 1536,
+        "temperature": 0.2,
+        "topP": 0.9,
+        "seeds": [
+          42
+        ]
+      },
+      "cases": [
+        "py-cache-expiration",
+        "ts-pagination-boundary",
+        "ts-plugin-catalog-context"
+      ],
+      "trials": 3,
+      "solved": 1,
+      "solvedRate": 0.3333,
+      "outcomes": {
+        "partial": 2,
+        "solved": 1
+      },
+      "medianSolvedSeconds": 195.694,
+      "medianAllSeconds": 195.694,
+      "totalAgentSeconds": 736.448,
+      "weightedDecodeTokensPerSecond": 20.557,
+      "inputTokens": 239549,
+      "outputTokens": 11914,
+      "draftAcceptanceRate": 0.5202,
+      "acceptedDraftTokens": 9572,
+      "draftedTokens": 18399,
+      "tools": {
+        "total": 39,
+        "successful": 25,
+        "failed": 14
+      },
+      "changedFiles": 1,
+      "falseSuccess": 0,
+      "falseFailure": 0,
+      "resources": {
+        "peakSystemRamGiB": 27.4,
+        "peakGpuGiB": 6.825,
+        "averageGpuUtilizationPercent": 48.17
+      }
+    }
+  ],
+  "excludedRuns": [
+    {
+      "runId": "20261108T082117Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T082117Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T082312Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T082312Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T082458Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T082458Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T082833Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T082833Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T083844Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T083844Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T084116Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T084116Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T084459Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T084459Z\\summaries.json'"
+    },
+    {
+      "runId": "20261108T085142Z",
+      "reason": "ENOENT: no such file or directory, open '<runs>\\20261108T085142Z\\summaries.json'"
+    }
+  ]
+}

@@ -48,7 +48,7 @@ class Replay implements Provider {
   async health() { return { ok: true }; }
   async getModelDetails(model: string): Promise<ModelDetails> {
     return {
-      id: model, name: model, family: "qwen3", contextLength: 16384,
+      id: model, name: model, family: /gemma/i.test(model) ? "gemma4" : "qwen3", contextLength: 16384,
       samplingDefaults: { temperature: 0.6, topP: 0.95, topK: 20, minP: 0, repeatPenalty: 1 },
       thinking: { modes: ["off", "on"], defaultMode: "off", control: "native" },
     };
@@ -108,9 +108,15 @@ try {
   `, 5);
   assert.deepEqual(searchResults, [{ title: "Example & Docs", url: "https://example.com/docs", snippet: "Trusted-looking <text> is still untrusted." }]);
   const recommendations = recommendModels({ ram: { totalBytes: 32 * 1024 ** 3, freeBytes: 20 * 1024 ** 3 }, gpus: [{ id: "gpu", name: "8GB", totalBytes: 8 * 1024 ** 3, freeBytes: 6 * 1024 ** 3 }], source: "test" });
-  assert.equal(recommendations.find((model) => model.id === "qwen2.5-coder-7b-q4")?.placement, "vram");
+  assert.equal(recommendations.find((model) => model.id === "qwen3-8b-q4")?.placement, "hybrid");
   assert.equal(recommendations.find((model) => model.id === "gemma-4-26b-a4b-ud-q4")?.placement, "hybrid");
+  assert(recommendations.some((model) => model.id === "qwen3-coder-30b-a3b-q4"));
+  assert(recommendations.every((model) => model.totalParametersB >= 8));
   assert(recommendations.every((model) => model.recommendedContext >= 32768 && model.installCommand.startsWith("ollama pull ")));
+  const vramRecommendations = recommendModels({ ram: { totalBytes: 64 * 1024 ** 3, freeBytes: 50 * 1024 ** 3 }, gpus: [{ id: "gpu24", name: "24GB", totalBytes: 24 * 1024 ** 3, freeBytes: 20 * 1024 ** 3 }], source: "test" });
+  assert.equal(vramRecommendations.find((model) => model.id === "gemma-4-26b-a4b-ud-q4")?.placement, "vram");
+  const ramRecommendations = recommendModels({ ram: { totalBytes: 64 * 1024 ** 3, freeBytes: 50 * 1024 ** 3 }, gpus: [], source: "test" });
+  assert(ramRecommendations.length > 0 && ramRecommendations.every((model) => model.placement === "ram"));
   const externalConfig = mergeConfig({
     provider: "lab",
     providers: {
@@ -330,6 +336,30 @@ try {
   assert.equal(restored.tools.profileByModel, true);
   await assert.rejects(profileControls.setToolProfile("invalid"), /Profile must be/);
   modelProfiles.tools.dispose();
+
+  const inferenceProfiles = await fixture("inference-profiles", ["A direct answer."]);
+  inferenceProfiles.provider.id = "llama.cpp";
+  await inferenceProfiles.chat.setModel("Gemma 26B A4B");
+  await inferenceProfiles.chat.setInferenceProfile("mtp-3", "models/mtp-gemma.gguf");
+  assert.equal(inferenceProfiles.chat.currentInferenceProfile, "mtp-3");
+  assert.equal(inferenceProfiles.chat.currentInferenceDraftModel, "models/mtp-gemma.gguf");
+  await inferenceProfiles.chat.setModel("qwen3:8b");
+  await assert.rejects(inferenceProfiles.chat.setInferenceProfile("mtp-3", "models/mtp-qwen.gguf"), /restricted to compatible Gemma/i);
+  await inferenceProfiles.chat.setModel("Gemma Fresh 26B");
+  const inferenceTui = new TinyCodeTui({
+    chat: inferenceProfiles.chat, config: inferenceProfiles.config, persistedConfig: structuredClone(inferenceProfiles.config),
+    bus: new Bus(), configPath: path.join(root, "home/config.json"), cwd: inferenceProfiles.cwd,
+  });
+  const inferenceUi = inferenceTui as unknown as {
+    scheduleRender(): void;
+    runCommand(text: string): Promise<void>;
+    editor: { text: string };
+  };
+  inferenceUi.scheduleRender = () => {};
+  await inferenceUi.runCommand("/inference mtp-3");
+  assert.equal(inferenceUi.editor.text, "/inference mtp-3 ", "missing sidecar returns to path entry instead of a red profile error");
+  assert.equal(inferenceProfiles.chat.currentInferenceProfile, "standard");
+  inferenceProfiles.tools.dispose();
   console.log("ok model-size defaults / MoE total parameters / model switch and resume / manual profile persistence");
 
   const readGuard = await fixture("read-guard", [
@@ -406,7 +436,7 @@ try {
 
   const repeated = await fixture("repeat", [call("read_file", { path: "src/main.mjs" })]);
   await repeated.chat.send("Read and explain the file");
-  assert.equal(repeated.provider.requests.length, 4);
+  assert.equal(repeated.provider.requests.length, 6);
   assert.match(repeated.chat.current!.messages.at(-1)!.error!, /repeated unchanged/);
   repeated.tools.dispose();
 
@@ -546,6 +576,7 @@ try {
   await success.chat.send("Fix the code and run tests");
   assert.equal(success.chat.current!.messages.at(-1)!.outcome, "completed");
   assert.equal(success.chat.current!.messages.at(-1)!.error, undefined);
+  assert.equal(success.chat.current!.messages.at(-1)!.usage?.modelRequests, 4, "assistant usage distinguishes cumulative traffic across agent requests");
   assert.deepEqual(successApprovals, ["verify"]);
   const edited = success.chat.current!.messages.at(-1)!.parts.find((part) => part.type === "tool" && part.tool === "edit_file");
   assert(edited?.type === "tool");
@@ -713,6 +744,9 @@ try {
   await ui.setModel("other");
   assert.equal(ui.pickerKind, "thinking");
   await ui.applyPickerSelection("thinking", { value: "on", label: "On" });
+  assert.equal(ui.pickerKind, "inference", "model setup continues from thinking to inference");
+  await ui.applyPickerSelection("inference", { value: "standard", label: "Standard" });
+  assert.equal(success.chat.currentInferenceProfile, "standard");
   assert.equal(success.provider.loads.length, loadsBeforeModelChange, "model picker changes metadata only");
   await ui.openContextPicker();
   assert.equal(ui.pickerKind, "context");
@@ -731,8 +765,40 @@ try {
   await applied;
   assert.equal(setParallelCalls, 1);
   assert.equal(JSON.parse(await readFile(path.join(root, "home/config.json"), "utf8")).ollama.parallel, 1);
+
+  const firstTab = success.chat.current!.meta.id;
+  await success.chat.createSession({ title: "Second workspace tab", cwd: success.cwd });
+  const secondTab = success.chat.current!.meta.id;
+  await success.chat.send("Keep this session in the tab bar.");
+  await success.chat.createSession({ title: "Other folder", cwd: path.join(root, "other-folder") });
+  const otherFolderTab = success.chat.current!.meta.id;
+  await success.chat.resume(firstTab);
+  const tabUi = ui as unknown as {
+    refreshSessionTabs(): Promise<void>;
+    buildSessionTabs(width: number): Array<{ text: string }>;
+    activateSessionTab(hit: { sessionId?: string; close?: boolean }): Promise<void>;
+    sessionTabs: Array<{ id: string }>;
+  };
+  await tabUi.refreshSessionTabs();
+  assert(tabUi.sessionTabs.some((session) => session.id === firstTab));
+  assert(tabUi.sessionTabs.some((session) => session.id === secondTab));
+  assert(!tabUi.sessionTabs.some((session) => session.id === otherFolderTab), "tabs only include sessions from this workspace");
+  assert.match(tabUi.buildSessionTabs(100).map((span) => span.text).join(""), /Second workspace tab/);
+  await tabUi.activateSessionTab({ sessionId: secondTab });
+  assert.equal(success.chat.current!.meta.id, secondTab);
+  await tabUi.activateSessionTab({ sessionId: secondTab, close: true });
+  assert.notEqual(success.chat.current!.meta.id, secondTab);
+  const closedTab = await success.store.load(secondTab);
+  assert.equal(closedTab.meta.id, secondTab, "closing a tab does not delete its session");
+  assert.equal(typeof closedTab.meta.tabClosedAt, "number", "closed-tab state is persisted with the session");
+  await tabUi.refreshSessionTabs();
+  assert(!tabUi.sessionTabs.some((session) => session.id === secondTab), "a closed tab stays hidden after rebuilding startup tabs");
+  await success.chat.resume(secondTab);
+  await tabUi.refreshSessionTabs();
+  assert.equal((await success.store.load(secondTab)).meta.tabClosedAt, undefined, "explicit resume reopens a closed tab");
+  assert(tabUi.sessionTabs.some((session) => session.id === secondTab));
   success.tools.dispose();
-  console.log("ok model → thinking → context flow / mouse parallel button / isolated preference persistence");
+  console.log("ok model → thinking → inference → context flow / workspace session tabs / mouse controls / preference persistence");
 
   const realFetch = globalThis.fetch;
   const requests: Array<{ url: string; body: Record<string, unknown> }> = [];

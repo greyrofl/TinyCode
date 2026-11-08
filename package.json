@@ -1,7 +1,7 @@
 {
   "name": "tinycode-cli",
-  "version": "0.6.0",
-  "description": "A terminal coding agent for small local models running on Ollama",
+  "version": "0.7.0",
+  "description": "A terminal coding agent for local models via llama.cpp, Ollama, and compatible APIs",
   "type": "module",
   "bin": {
     "tinycode": "dist/cli.js"
@@ -13,7 +13,8 @@
     "compact.md",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "data"
   ],
   "engines": {
     "node": ">=20.11"
@@ -26,6 +27,7 @@
     "smoke": "tsx scripts/smoke.ts && tsx scripts/features-smoke.ts && tsx scripts/history-smoke.ts && tsx scripts/context-flow-smoke.ts && tsx scripts/tool-output-smoke.ts && tsx scripts/engines-smoke.ts",
     "smoke:tui": "tsx scripts/tui-smoke.ts",
     "mock": "node scripts/mock-ollama.mjs",
+    "data:efficiency": "node scripts/collect-model-efficiency.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run typecheck && npm run smoke"
   },

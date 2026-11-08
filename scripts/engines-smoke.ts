@@ -93,6 +93,7 @@ class LlamaSimulator {
   startupFailures = 0;
   endMarker = true;
   events: string[] = [];
+  help = "--gpu-layers N\n                       auto or all\n--no-webui\n--no-agent\n--spec-type TYPE\n--spec-draft-model FILE\n--spec-draft-n-max N\n--spec-draft-type-k TYPE\n--spec-draft-type-v TYPE";
   spawns: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
   requests: Array<Record<string, unknown>> = [];
   templates: Array<Record<string, unknown>> = [];
@@ -132,7 +133,7 @@ class LlamaSimulator {
     return new LlamaRuntime(config, root, {
       fetch: this.fetch,
       installer: { locate: async () => "fake-llama-server", ensure: async (signal) => { signal?.throwIfAborted(); this.installs++; return "fake-llama-server"; } },
-      capture: async () => "--gpu-layers N\n                       auto or all\n--no-webui\n--no-agent",
+      capture: async () => this.help,
       checkPort: async () => {}, memoryStatus: async () => this.memory(),
       spawnServer: (_executable, args, env) => {
         assert.equal(this.heldVram, 0, "do not allocate on top of an unreleased runner");
@@ -197,6 +198,9 @@ try {
   assert.deepEqual(legacy, copy);
   assert.equal(mergeConfig({ provider: "llama.cpp", providerModels: { "llama.cpp": modelFile } }).model, modelFile);
   assert.equal(mergeConfig({ llama: { parallel: 0, batchSize: -1, backend: "invalid" } }).llama.parallel, 1);
+  assert.equal(mergeConfig({ llama: { speculativeType: "ngram-mod" } }).llama.speculativeType, "ngram-mod");
+  assert.equal(mergeConfig({ llama: { speculativeType: "draft-mtp", speculativeDraftModel: "draft.gguf", speculativeDraftDevice: "cpu", speculativeDraftMax: 5 } }).llama.speculativeDraftMax, 5);
+  assert.equal(mergeConfig({ llama: { speculativeType: "invalid" } }).llama.speculativeType, "none");
   console.log("ok llama.cpp-first defaults / old Ollama config preserved / engine model defaults");
 
   let network = 0;
@@ -296,6 +300,7 @@ try {
   await writeFile(path.join(modelDir, "split-7B-00001-of-00010.gguf"), modelBytes);
   await writeFile(path.join(modelDir, "split-7B-00010-of-00010.gguf"), modelBytes);
   await writeFile(path.join(modelDir, "mmproj-fake.gguf"), modelBytes);
+  await writeFile(path.join(modelDir, "mtp-simulated-7B-Q8_0.gguf"), modelBytes);
   const digest = "1".repeat(64), manifests = path.join(process.env.OLLAMA_MODELS!, "manifests/registry.ollama.ai/library/simulated-model");
   await mkdir(manifests, { recursive: true }); await mkdir(path.join(process.env.OLLAMA_MODELS!, "blobs"), { recursive: true });
   await writeFile(path.join(manifests, "7b"), JSON.stringify({ layers: [{ mediaType: "application/vnd.ollama.image.model", digest: `sha256:${digest}` }] }));
@@ -303,6 +308,7 @@ try {
   const catalog = new GgufCatalog({ ...defaultConfig().llama, models: { alias: modelFile }, modelDirs: [modelDir] }, root);
   const local = await catalog.list();
   assert(local.some((m) => m.id === "alias")); assert(local.some((m) => m.id === "ollama-cache/simulated-model:7b"));
+  assert.equal(local.find((m) => /mtp-simulated/.test(m.id))?.role, "draft");
   assert(!local.some((m) => /00010-of|mmproj/.test(m.id)));
   assert.equal(await catalog.resolve("ollama-cache/simulated-model:7b"), path.join(process.env.OLLAMA_MODELS!, "blobs", `sha256-${digest}`));
   assert.equal((await catalog.getDetails("alias")).contextMemory?.variableKvBytesPerToken, 131072);
@@ -318,6 +324,8 @@ try {
   assert.equal(argv[argv.indexOf("--model") + 1], modelFile);
   assert(!argv.includes("--hf-repo")); assert(simulator.spawns[0]!.env.LLAMA_API_KEY);
   assert(!(await provider.listModels()).some((model) => model.id === runtime.apiModel), "the private API alias must not appear as a selectable GGUF");
+  assert(!(await provider.listModels()).some((model) => model.role === "draft"), "MTP sidecars must not appear as target models");
+  assert((await provider.listDraftModels()).some((model) => model.role === "draft"), "MTP sidecars remain discoverable by inference setup");
   simulator.ready = false;
   assert.equal(await runtime.getRunningModel("simulated-7B"), null);
   simulator.ready = true;
@@ -342,6 +350,31 @@ try {
   await provider.loadModel({ model: "simulated-7B", numCtx: 32768 });
   assert.equal(simulator.spawns.length, 2);
   assert(simulator.events.indexOf("memory-free") < simulator.events.indexOf("spawn:32768"));
+
+  const draftFile = path.join(root, "mtp-gemma-simulated-Q8_0.gguf");
+  await writeFile(draftFile, modelBytes);
+  const mtp = (profile: "mtp-3" | "mtp-6", draftMax: number) => ({
+    profile, speculativeType: "draft-mtp" as const, draftModel: draftFile,
+    draftDevice: "auto" as const, draftMax, draftCacheTypeK: "q8_0", draftCacheTypeV: "q8_0",
+  });
+  await provider.loadModel({ model: "simulated-7B", numCtx: 32768, inference: mtp("mtp-3", 3) });
+  const mtpArgs = simulator.spawns.at(-1)!.args;
+  assert.equal(mtpArgs[mtpArgs.indexOf("--spec-type") + 1], "draft-mtp");
+  assert.equal(mtpArgs[mtpArgs.indexOf("--spec-draft-model") + 1], draftFile);
+  assert.equal(mtpArgs[mtpArgs.indexOf("--spec-draft-n-max") + 1], "3");
+  assert.equal(mtpArgs[mtpArgs.indexOf("--spec-draft-type-k") + 1], "q8_0");
+  const sameMtpSpawns = simulator.spawns.length;
+  await provider.loadModel({ model: "simulated-7B", numCtx: 32768, inference: mtp("mtp-3", 3) });
+  assert.equal(simulator.spawns.length, sameMtpSpawns, "an unchanged inference profile reuses the runner");
+  await provider.loadModel({ model: "simulated-7B", numCtx: 32768, inference: mtp("mtp-6", 6) });
+  assert.equal(simulator.spawns.length, sameMtpSpawns + 1, "changing MTP depth restarts the managed runner once");
+  assert.equal(simulator.spawns.at(-1)!.args[simulator.spawns.at(-1)!.args.indexOf("--spec-draft-n-max") + 1], "6");
+  await provider.loadModel({ model: "simulated-7B", numCtx: 32768, inference: {
+    profile: "ngram", speculativeType: "ngram-mod", draftDevice: "auto", draftMax: 0,
+    draftCacheTypeK: "q8_0", draftCacheTypeV: "q8_0",
+  } });
+  assert.equal(simulator.spawns.at(-1)!.args[simulator.spawns.at(-1)!.args.indexOf("--spec-type") + 1], "ngram-mod");
+  assert(!simulator.spawns.at(-1)!.args.includes("--spec-draft-model"));
   await runtime.dispose();
   assert.equal(simulator.child!.killed, true);
   console.log("ok direct GGUF argv / one-slot load / streamed Unicode + reasoning / actual token refusal / unload-VRAM-reload");
@@ -349,6 +382,10 @@ try {
   const external = new LlamaSimulator(); external.ready = true;
   const externalRuntime = external.runtime();
   assert.equal((await externalRuntime.loadModel({ model: modelFile, numCtx: 8192 })).memoryKnown, false);
+  await assert.rejects(externalRuntime.loadModel({ model: modelFile, numCtx: 8192, inference: {
+    profile: "ngram", speculativeType: "ngram-mod", draftDevice: "auto", draftMax: 0,
+    draftCacheTypeK: "q8_0", draftCacheTypeV: "q8_0",
+  } }), /cannot reconfigure an external llama-server/i);
   await assert.rejects(externalRuntime.loadModel({ model: modelFile, numCtx: 32768 }), /external llama-server/);
   await assert.rejects(externalRuntime.unloadModel(modelFile), /does not own/);
   await assert.rejects(externalRuntime.restartServer(), /Only a TinyCode-owned/);

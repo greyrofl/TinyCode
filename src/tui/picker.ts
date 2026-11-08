@@ -14,6 +14,8 @@ export interface PickerItem {
   heading?: boolean;
   /** Indent an item under a category heading. */
   nested?: boolean;
+  /** Optional semantic color used for the marker and label. */
+  tone?: "accent" | "info" | "success" | "warning" | "danger" | "reasoning" | "muted";
 }
 
 export interface PickerOptions {
@@ -23,7 +25,7 @@ export interface PickerOptions {
   placeholder?: string;
   footer?: string;
   message?: string;
-  messageStyle?: "warning" | "muted";
+  messageStyle?: "warning" | "muted" | "info" | "success";
   showFilter?: boolean;
 }
 
@@ -118,6 +120,45 @@ function boxLine(content: Line, boxWidth: number, palette: Palette, selected = f
   );
 }
 
+function toneColor(item: PickerItem, palette: Palette): string {
+  switch (item.tone) {
+    case "accent": return palette.accent;
+    case "info": return palette.code;
+    case "success": return palette.success;
+    case "warning": return palette.warn;
+    case "danger": return palette.error;
+    case "reasoning": return palette.reasoning;
+    case "muted": return palette.muted;
+    default: return palette.text;
+  }
+}
+
+function messageColor(style: PickerOptions["messageStyle"], palette: Palette): string {
+  if (style === "muted") return palette.muted;
+  if (style === "info") return palette.code;
+  if (style === "success") return palette.success;
+  return palette.warn;
+}
+
+function wrapLimited(text: string, width: number, limit: number): string[] {
+  const all = wrapPlain(text, width);
+  if (all.length <= limit) return all;
+  const shown = all.slice(0, limit);
+  shown[shown.length - 1] = truncateWidth(`${shown.at(-1) ?? ""}…`, width);
+  return shown;
+}
+
+function footerSpans(text: string, palette: Palette): Line {
+  const parts = text.split(/(enter|esc|↑↓|click|\by\b|\ba\b|\bn\b)/gi);
+  return parts.filter(Boolean).map((part) => {
+    if (/^enter$/i.test(part)) return { text: part, style: { fg: palette.success, bold: true } };
+    if (/^esc$/i.test(part)) return { text: part, style: { fg: palette.warn, bold: true } };
+    if (/^(?:↑↓|click)$/i.test(part)) return { text: part, style: { fg: palette.accent } };
+    if (/^[yan]$/i.test(part)) return { text: part, style: { fg: part.toLowerCase() === "n" ? palette.error : palette.success, bold: true } };
+    return { text: part, style: { fg: palette.faint } };
+  });
+}
+
 export interface RenderedPicker {
   lines: Line[];
   top: number;
@@ -126,13 +167,26 @@ export interface RenderedPicker {
 
 export function renderPicker(picker: Picker, width: number, height: number, palette: Palette): RenderedPicker {
   const boxWidth = Math.max(12, Math.min(width - 4, 76));
+  const innerWidth = boxWidth - 4;
   const description = picker.options.message
-    ? wrapPlain(sanitizeText(picker.options.message), boxWidth - 4).slice(0, Math.max(1, Math.min(5, height - 8)))
+    ? wrapLimited(sanitizeText(picker.options.message), innerWidth, Math.max(1, Math.min(5, height - 8)))
     : [];
-  const maxVisible = Math.max(1, Math.min(10, height - 6 - description.length));
   const items = picker.items;
+  const selectedItem = items[picker.index];
+  // The row already identifies the selected label. Use the preview for its
+  // full detail first; otherwise a long label can consume every narrow line
+  // before the useful metadata becomes visible.
+  const previewText = selectedItem && !selectedItem.heading
+    ? selectedItem.detail ? sanitizeText(singleLine(selectedItem.detail))
+      : displayWidth(selectedItem.label) > Math.max(8, innerWidth - 6) ? sanitizeText(singleLine(selectedItem.label)) : ""
+    : "";
+  const preview = previewText ? wrapLimited(previewText, Math.max(4, innerWidth - 3), Math.max(1, Math.min(3, height - description.length - 9))) : [];
+  const defaultFooter = innerWidth < 34 ? "enter · esc · ↑↓" : innerWidth < 48 ? "enter select · esc close · ↑↓" : "enter select · esc close · ↑↓ move · click choose";
+  const footer = picker.options.footer ?? defaultFooter;
+  const footerLines = wrapLimited(sanitizeText(singleLine(footer)), innerWidth, 2);
+  const maxVisible = Math.max(1, Math.min(10, height - 5 - footerLines.length - description.length - preview.length));
   const visibleCount = Math.max(1, Math.min(items.length, maxVisible));
-  const boxHeight = visibleCount + 4 + description.length;
+  const boxHeight = visibleCount + 3 + footerLines.length + description.length + preview.length;
 
   const top = Math.max(1, Math.min(height - boxHeight, Math.floor((height - boxHeight) / 2)));
   const left = Math.max(0, Math.floor((width - boxWidth) / 2));
@@ -142,12 +196,14 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
   const hits: RenderedPicker["hits"] = [];
 
   const title = truncateWidth(singleLine(sanitizeText(picker.options.title)), Math.max(4, boxWidth - 8));
-  const topContent = `╭─ ${title} `;
-  const topFill = Math.max(0, boxWidth - displayWidth(topContent) - 1);
+  const topPrefix = "╭─ ";
+  const topFill = Math.max(0, boxWidth - displayWidth(topPrefix) - displayWidth(title) - 2);
   rows.push(
     boxLine(
       [
-        { text: topContent + "─".repeat(topFill) + "╮", style: border },
+        { text: topPrefix, style: border },
+        { text: title, style: { fg: palette.accent, bg: palette.panel, bold: true } },
+        { text: ` ${"─".repeat(topFill)}╮`, style: border },
       ],
       boxWidth,
       palette,
@@ -157,24 +213,23 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
   for (const text of description) {
     rows.push(boxLine([
       { text: "│ ", style: border },
-      ...padLine([{ text, style: picker.options.messageStyle === "muted" ? { fg: palette.muted, italic: true } : { fg: palette.warn } }], boxWidth - 4),
+      ...padLine([{ text, style: { fg: messageColor(picker.options.messageStyle, palette), italic: picker.options.messageStyle === "muted" } }], innerWidth),
       { text: " │", style: border },
     ], boxWidth, palette));
   }
 
-  const innerWidth = boxWidth - 4;
-  const filterText = picker.options.showFilter === false ? "Choose with arrows or click an option" : picker.filter
+  const filterText = picker.options.showFilter === false ? innerWidth < 34 ? "↑↓ choose · enter select" : "Choose with arrows or click an option" : picker.filter
     ? sanitizeText(picker.filter)
     : sanitizeText(picker.options.placeholder ?? "Type to filter…");
-  const filterWidth = displayWidth(filterText);
-  const filterPad = Math.max(0, innerWidth - filterWidth - 1);
+  const shownFilter = truncateWidth(filterText, innerWidth - 1);
+  const filterPad = Math.max(0, innerWidth - displayWidth(shownFilter) - 1);
   rows.push(
     boxLine(
       [
         { text: "│ ", style: border },
         {
-          text: truncateWidth(filterText, innerWidth - 1),
-          style: picker.filter ? { fg: palette.text } : { fg: palette.faint, dim: true },
+          text: shownFilter,
+          style: picker.filter ? { fg: palette.code, bold: true } : { fg: palette.muted, dim: true },
         },
         { text: "▏", style: { fg: palette.accent } },
         { text: " ".repeat(filterPad) },
@@ -209,15 +264,15 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
       if (!item) break;
       const selected = start + offset === picker.index;
       if (item.heading) {
-        const label = truncateWidth(sanitizeText(singleLine(item.label)), Math.max(4, innerWidth - 4));
+        const label = truncateWidth(sanitizeText(singleLine(item.label)), Math.max(4, innerWidth - 5));
         const detailLimit = Math.max(0, Math.min(Math.floor(innerWidth * .35), innerWidth - displayWidth(label) - 6));
         const detail = detailLimit > 3 && item.detail ? truncateWidth(sanitizeText(singleLine(item.detail)), detailLimit) : "";
         const ruleWidth = Math.max(1, innerWidth - 4 - displayWidth(label) - displayWidth(detail));
         hits.push({ row: top + rows.length, left: left + 1, right: left + boxWidth - 2, index: start + offset });
         rows.push(boxLine([
           { text: "│ ", style: border },
-          { text: "▌ ", style: { fg: palette.accent } },
-          { text: label, style: { fg: palette.text, bold: true } },
+          { text: "▌ ", style: { fg: toneColor(item, palette) } },
+          { text: label, style: { fg: toneColor(item, palette), bold: true } },
           { text: ` ${"─".repeat(ruleWidth)} `, style: { fg: palette.border, dim: true } },
           { text: detail, style: { fg: palette.faint, italic: true } },
           { text: " │", style: border },
@@ -226,10 +281,12 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
       }
       const marker = item.nested ? selected ? "  ❯ " : "    " : selected ? "❯ " : "  ";
       const available = boxWidth - 4 - displayWidth(marker);
-      const label = truncateWidth(sanitizeText(singleLine(item.label)), available);
-      const detailSpace = Math.max(0, available - displayWidth(label) - 2);
-      const detail =
-        item.detail && detailSpace > 4 ? `  ${truncateWidth(sanitizeText(singleLine(item.detail)), detailSpace)}` : "";
+      const rawDetail = item.detail ? sanitizeText(singleLine(item.detail)) : "";
+      const detailWidth = rawDetail && available >= 24
+        ? Math.min(displayWidth(rawDetail), Math.max(8, Math.min(Math.floor(available * .42), available - 10))) : 0;
+      const labelWidth = Math.max(4, available - (detailWidth ? detailWidth + 2 : 0));
+      const label = truncateWidth(sanitizeText(singleLine(item.label)), labelWidth);
+      const detail = detailWidth ? `  ${truncateWidth(rawDetail, detailWidth)}` : "";
       const used = displayWidth(marker) + displayWidth(label) + displayWidth(detail);
       const padding = Math.max(0, boxWidth - 4 - used);
       hits.push({ row: top + rows.length, left: left + 1, right: left + boxWidth - 2, index: start + offset });
@@ -237,9 +294,9 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
         boxLine(
           [
             { text: "│ ", style: border },
-            { text: marker, style: { fg: selected ? palette.accent : palette.faint, bold: selected } },
-            { text: label, style: { fg: item.disabled ? palette.faint : selected ? palette.text : palette.muted, bold: selected && !item.disabled } },
-            { text: detail, style: { fg: palette.faint } },
+            { text: marker, style: { fg: selected ? toneColor(item, palette) : palette.faint, bold: selected, dim: item.disabled } },
+            { text: label, style: { fg: item.tone ? toneColor(item, palette) : item.disabled ? palette.faint : selected ? palette.text : palette.muted, bold: selected && !item.disabled, dim: item.disabled } },
+            { text: detail, style: { fg: item.disabled ? palette.faint : selected ? palette.code : palette.faint } },
             { text: " ".repeat(padding) },
             { text: " │", style: border },
           ],
@@ -251,21 +308,23 @@ export function renderPicker(picker: Picker, width: number, height: number, pale
     }
   }
 
-  const footer = picker.options.footer ?? "enter select · esc close · ↑↓ move";
-  const footerText = truncateWidth(sanitizeText(singleLine(footer)), Math.max(4, innerWidth - 1));
-  const footerPad = Math.max(0, innerWidth - displayWidth(footerText));
-  rows.push(
-    boxLine(
-      [
-        { text: "│ ", style: border },
-        { text: footerText, style: { fg: palette.faint } },
-        { text: " ".repeat(footerPad) },
-        { text: " │", style: border },
-      ],
-      boxWidth,
-      palette,
-    ),
-  );
+  for (const [index, text] of preview.entries()) {
+    const item = selectedItem!;
+    rows.push(boxLine([
+      { text: "│ ", style: border },
+      { text: index === 0 ? "◆ " : "  ", style: { fg: toneColor(item, palette) } },
+      ...padLine([{ text, style: { fg: index === 0 ? palette.text : palette.muted, italic: index > 0 } }], innerWidth - 2),
+      { text: " │", style: border },
+    ], boxWidth, palette));
+  }
+
+  for (const text of footerLines) {
+    rows.push(boxLine([
+      { text: "│ ", style: border },
+      ...padLine(footerSpans(text, palette), innerWidth),
+      { text: " │", style: border },
+    ], boxWidth, palette));
+  }
 
   rows.push(boxLine([{ text: `╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`, style: border }], boxWidth, palette));
 

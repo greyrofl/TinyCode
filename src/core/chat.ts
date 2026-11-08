@@ -11,6 +11,13 @@ import {
 } from "./compaction.js";
 import { buildContext, ContextOverflowError, estimateContextTokens, expandContext, type ContextOptions } from "./context.js";
 import { modelParameterBillions, resolveToolProfile } from "./tool-profile.js";
+import {
+  inferenceProfileFromSpeculative,
+  inferenceRuntimeOptions,
+  isInferenceProfile,
+  isMtpProfile,
+  type InferenceProfileId,
+} from "./inference-profile.js";
 import type { Bus } from "./bus.js";
 import { errorMessage } from "../util/errors.js";
 import { newMessageId, newToolCallId } from "../util/id.js";
@@ -254,7 +261,7 @@ export class ChatService {
       this.config.model = this.config.providerModels[id] ?? "";
       session.meta.provider = id;
       session.meta.model = this.config.model;
-      delete session.meta.numCtx; delete session.meta.thinking; delete session.meta.lastContext;
+      delete session.meta.numCtx; delete session.meta.thinking; delete session.meta.inferenceProfile; delete session.meta.lastContext;
       this.liveContext = null; this.lastToolStage = "plan";
       await this.initializeModelPreferences(session);
       this.bus.emit("session.changed", { meta: session.meta });
@@ -263,6 +270,21 @@ export class ChatService {
 
   get currentThinking(): string {
     return this.session?.meta.thinking ?? this.modelPreference?.thinking ?? this.config.generation.thinking;
+  }
+
+  get currentInferenceProfile(): InferenceProfileId {
+    if (this.provider.id !== "llama.cpp") return "standard";
+    return this.session?.meta.inferenceProfile ?? this.modelPreference?.inference?.profile
+      ?? inferenceProfileFromSpeculative(this.config.llama.speculativeType, this.config.llama.speculativeDraftMax);
+  }
+
+  get currentInferenceDraftModel(): string | null {
+    return this.modelPreference?.inference?.draftModel ?? this.config.llama.speculativeDraftModel;
+  }
+
+  private inferenceOptions() {
+    if (this.provider.id !== "llama.cpp") return undefined;
+    return inferenceRuntimeOptions(this.currentInferenceProfile, this.config.llama, this.currentInferenceDraftModel ?? undefined);
   }
 
   get contextLimit(): number {
@@ -407,7 +429,10 @@ export class ChatService {
     this.liveContext = null;
     this.lastToolStage = "plan";
     this.checkpointedAssistantId = null;
-    if (this.runnerContext?.model !== session.meta.model) this.runnerContext = null;
+    // A same-model session may use a different inference profile. Re-adopt the
+    // runner through loadModel so the runtime can compare its launch signature;
+    // an unchanged profile remains a no-op, while a changed one reloads once.
+    this.runnerContext = null;
     await this.initializeModelPreferences(session);
     this.setStatus({ state: "idle" });
     this.bus.emit("session.changed", { meta: session.meta });
@@ -420,6 +445,8 @@ export class ChatService {
 
   private async resumeState(id: string): Promise<Session> {
     const session = await this.store.load(id);
+    // Explicit resume is the way to reopen a previously closed workspace tab.
+    delete session.meta.tabClosedAt;
     this.normalizeQueuedInputs(session);
     if (this.provider.selectProvider) {
       const engine = session.meta.provider ?? "ollama";
@@ -437,15 +464,19 @@ export class ChatService {
     this.liveContext = null;
     this.lastToolStage = "plan";
     this.checkpointedAssistantId = null;
-    if (this.runnerContext?.model !== session.meta.model) this.runnerContext = null;
+    // Inference profile is session-local even when the target model matches.
+    this.runnerContext = null;
     await this.initializeModelPreferences(session);
     this.setStatus({ state: "idle" });
     this.bus.emit("session.changed", { meta: session.meta });
     return session;
   }
 
-  async listSessions(): Promise<SessionMeta[]> {
-    return this.store.list();
+  async listSessions(cwd?: string): Promise<SessionMeta[]> {
+    const sessions = await this.store.list();
+    if (!cwd) return sessions;
+    const target = canonicalFile(process.cwd(), cwd);
+    return sessions.filter((session) => canonicalFile(process.cwd(), session.cwd) === target);
   }
 
   async deleteSession(id: string): Promise<void> {
@@ -457,8 +488,40 @@ export class ChatService {
     }
   }
 
+  async setSessionTabClosed(id: string, closed: boolean): Promise<void> {
+    if (this.busy) throw new Error("Cannot change session tabs while generation or another session change is running.");
+    const session = this.session?.meta.id === id ? this.requireSession() : await this.store.load(id);
+    if (closed) session.meta.tabClosedAt = Date.now();
+    else delete session.meta.tabClosedAt;
+    // Closing a tab is presentation state: do not move an old session to the
+    // front of /sessions or make --continue select it as recent work.
+    await this.store.saveMeta(session.meta);
+    if (this.session?.meta.id === id) this.bus.emit("session.changed", { meta: session.meta });
+  }
+
   async listModels(): Promise<ModelInfo[]> {
     return this.provider.listModels();
+  }
+
+  async inferenceSupport(): Promise<{ direct: boolean; mtp: boolean; draftModel: string | null; note?: string }> {
+    if (this.provider.id !== "llama.cpp") {
+      return { direct: false, mtp: false, draftModel: null, note: "Inference profiles require TinyCode-managed llama.cpp." };
+    }
+    const details = await this.getModelDetails();
+    const target = `${details.family ?? ""} ${details.name} ${details.id}`;
+    const mtp = /gemma/i.test(target);
+    return {
+      direct: true,
+      mtp,
+      draftModel: this.currentInferenceDraftModel,
+      ...(!mtp ? { note: "MTP presets in TinyCode 0.7 are restricted to compatible Gemma targets; N-gram remains available." } : {}),
+    };
+  }
+
+  async listInferenceDraftModels(): Promise<ModelInfo[]> {
+    if (this.provider.id !== "llama.cpp") return [];
+    if (this.provider.listDraftModels) return this.provider.listDraftModels();
+    return (await this.provider.listModels()).filter((model) => /(?:^|[-_. ])(?:mtp|draft)(?:[-_. ]|$)/i.test(`${model.id} ${model.name}`));
   }
 
   async listProviderModels(signal?: AbortSignal) {
@@ -487,6 +550,12 @@ export class ChatService {
     const preference = this.modelPreference;
     session.meta.numCtx ??= preference?.numCtx ?? this.config.generation.numCtx;
     session.meta.thinking ??= preference?.thinking ?? this.config.generation.thinking;
+    const preferredInference = this.provider.id === "llama.cpp"
+      ? preference?.inference?.profile ?? inferenceProfileFromSpeculative(this.config.llama.speculativeType, this.config.llama.speculativeDraftMax)
+      : "standard";
+    if (!isInferenceProfile(session.meta.inferenceProfile) || this.provider.id !== "llama.cpp" && session.meta.inferenceProfile !== "standard") {
+      session.meta.inferenceProfile = preferredInference;
+    }
     try {
       const details = await this.getModelDetails(session.meta.model);
       if (details.contextLength) session.meta.numCtx = Math.min(session.meta.numCtx, details.contextLength);
@@ -513,6 +582,7 @@ export class ChatService {
     this.runnerContext = null;
     this.lastToolStage = "plan";
     delete session.meta.thinking;
+    delete session.meta.inferenceProfile;
     delete session.meta.numCtx;
     delete session.meta.lastContext;
     this.liveContext = null;
@@ -532,6 +602,34 @@ export class ChatService {
     delete this.requireSession().meta.lastContext;
     await this.store.saveMeta(this.requireSession().meta);
     this.bus.emit("session.changed", { meta: this.requireSession().meta });
+  }
+
+  async setInferenceProfile(profile: string, draftModel?: string): Promise<void> {
+    if (this.busy) throw new Error("Cannot change inference profile during generation.");
+    if (!isInferenceProfile(profile)) throw new Error("Inference profile must be standard, ngram, mtp-2, mtp-3, mtp-6, or mtp-8.");
+    if (this.provider.id !== "llama.cpp" && profile !== "standard") throw new Error("Speculative inference profiles require the direct llama.cpp provider.");
+    if (isMtpProfile(profile)) {
+      const support = await this.inferenceSupport();
+      if (!support.mtp) throw new Error(support.note ?? "This target model is not compatible with TinyCode's Gemma MTP presets.");
+      if (!(draftModel?.trim() || this.currentInferenceDraftModel)) throw new Error("MTP needs a local draft sidecar GGUF. Pass it after the profile or configure llama.speculativeDraftModel; TinyCode never downloads weights.");
+    }
+    const session = this.requireSession();
+    session.meta.inferenceProfile = profile;
+    delete session.meta.lastContext;
+    this.liveContext = null;
+    this.runnerContext = null;
+    const existing = this.config.models[this.modelPreferenceKey] ?? {
+      thinking: this.currentThinking,
+      numCtx: this.contextLimit,
+    };
+    const selectedDraft = draftModel?.trim() || existing.inference?.draftModel || this.config.llama.speculativeDraftModel || undefined;
+    // Keep the compatible sidecar association while Standard/N-gram is active
+    // so switching back to MTP does not ask for the same local file again.
+    existing.inference = { profile, ...(selectedDraft ? { draftModel: selectedDraft } : {}) };
+    this.config.models[this.modelPreferenceKey] = existing;
+    session.meta.updatedAt = Date.now();
+    await this.store.saveMeta(session.meta);
+    this.bus.emit("session.changed", { meta: session.meta });
   }
 
   async setContextSize(tokens: number, options: { duringSetup?: boolean } = {}): Promise<void> {
@@ -958,6 +1056,7 @@ export class ChatService {
         think: thinkingValue(this.modelDetailsCache.get(session.meta.model)?.thinking.modes.includes("off") ? "off" : this.currentThinking, this.modelDetailsCache.get(session.meta.model)),
         timeoutMs: Math.min(this.engineConfig.timeoutMs, 120_000),
         keepAlive: this.engineConfig.keepAlive,
+        inference: this.inferenceOptions(),
         options: {
           ...this.generationOptions(),
           temperature: 0.1,
@@ -1068,6 +1167,7 @@ export class ChatService {
       numCtx: requested,
       keepAlive: this.engineConfig.keepAlive,
       runnerOptions,
+      inference: this.inferenceOptions(),
       signal,
     });
     if (result) this.runnerContext = {
@@ -1208,6 +1308,7 @@ export class ChatService {
       signal,
       think: thinkingValue(this.currentThinking, this.modelDetailsCache.get(session.meta.model)),
       keepAlive: this.engineConfig.keepAlive,
+      inference: this.inferenceOptions(),
       ...(this.toolsEnabled ? { tools: this.tools!.definitionsFor(this.currentToolProfile, stage).map((definition) => ({
         type: "function" as const,
         function: { name: definition.name, description: definition.description, parameters: definition.parameters as unknown as Record<string, unknown> },
@@ -1449,6 +1550,7 @@ export class ChatService {
     const evaluatorContext = Math.min(this.contextLimit, evaluatorDetails.contextLength ?? this.contextLimit);
     if (this.provider.prepareProviderModel) await this.provider.prepareProviderModel(evaluatorProvider, {
       model: evaluatorModel, numCtx: evaluatorContext, signal,
+      ...(evaluatorProvider === this.currentProvider ? { inference: this.inferenceOptions() } : {}),
     });
     this.setStatus({ state: "evaluating", detail: "reviewing goal" });
     const system = [
@@ -1479,6 +1581,7 @@ export class ChatService {
         signal,
         think: false,
         timeoutMs: 120_000,
+        ...(evaluatorProvider === this.currentProvider ? { inference: this.inferenceOptions() } : {}),
         options,
         tools: [
           { type: "function", function: { name: "continue_work", description: "The goal is not complete; tell the main agent exactly what remains.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"], additionalProperties: false } } },

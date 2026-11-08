@@ -27,21 +27,37 @@ function boxLine(content: Line, boxWidth: number, palette: Palette): Line {
   );
 }
 
+function footerLine(text: string, palette: Palette): Line {
+  return text.split(/(esc|\by\b|\ba\b|\bn\b)/gi).filter(Boolean).map((part) => {
+    if (/^esc$/i.test(part)) return { text: part, style: { fg: palette.warn, bold: true } };
+    if (/^[ya]$/i.test(part)) return { text: part, style: { fg: palette.success, bold: true } };
+    if (/^n$/i.test(part)) return { text: part, style: { fg: palette.error, bold: true } };
+    return { text: part, style: { fg: palette.faint } };
+  });
+}
+
 export function renderDialog(input: DialogInput): RenderedDialog {
   const { width, height, palette } = input;
-  const boxWidth = Math.max(24, Math.min(width - 4, 72));
+  const boxWidth = Math.max(12, Math.min(width - 4, 72));
   const innerWidth = boxWidth - 4;
   const left = Math.max(0, Math.floor((width - boxWidth) / 2));
   const border = { fg: palette.border, bg: palette.panel };
 
   const title = truncateWidth(singleLine(sanitizeText(input.title)), Math.max(4, boxWidth - 8));
-  const topContent = `╭─ ${title} `;
-  const topFill = Math.max(0, boxWidth - displayWidth(topContent) - 1);
+  const topPrefix = "╭─ ";
+  const topFill = Math.max(0, boxWidth - displayWidth(topPrefix) - displayWidth(title) - 2);
   const rows: Line[] = [
-    boxLine([{ text: topContent + "─".repeat(topFill) + "╮", style: border }], boxWidth, palette),
+    boxLine([
+      { text: topPrefix, style: border },
+      { text: title, style: { fg: palette.accent, bg: palette.panel, bold: true } },
+      { text: ` ${"─".repeat(topFill)}╮`, style: border },
+    ], boxWidth, palette),
   ];
 
-  for (const line of input.body.slice(0, Math.max(1, height - 5))) {
+  const allFooterLines = wrapPlain(sanitizeText(singleLine(input.footer)), innerWidth);
+  const footerLines = allFooterLines.slice(0, 2);
+  if (allFooterLines.length > 2) footerLines[1] = truncateWidth(`${footerLines[1] ?? ""}…`, innerWidth);
+  for (const line of input.body.slice(0, Math.max(1, height - 4 - footerLines.length))) {
     rows.push(
       boxLine(
         [
@@ -55,20 +71,11 @@ export function renderDialog(input: DialogInput): RenderedDialog {
     );
   }
 
-  const footer = truncateWidth(sanitizeText(singleLine(input.footer)), Math.max(4, innerWidth));
-  const footerPad = Math.max(0, innerWidth - displayWidth(footer));
-  rows.push(
-    boxLine(
-      [
-        { text: "│ ", style: border },
-        { text: footer, style: { fg: palette.faint } },
-        { text: " ".repeat(footerPad) },
-        { text: " │", style: border },
-      ],
-      boxWidth,
-      palette,
-    ),
-  );
+  for (const footer of footerLines) rows.push(boxLine([
+    { text: "│ ", style: border },
+    ...padLine(footerLine(footer, palette), innerWidth),
+    { text: " │", style: border },
+  ], boxWidth, palette));
   rows.push(boxLine([{ text: `╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`, style: border }], boxWidth, palette));
 
   const boxHeight = rows.length;
@@ -83,7 +90,7 @@ export function renderApproval(
   height: number,
   palette: Palette,
 ): RenderedDialog {
-  const boxWidth = Math.max(24, Math.min(width - 4, 72));
+  const boxWidth = Math.max(12, Math.min(width - 4, 72));
   const innerWidth = boxWidth - 4;
   const body: Line[] = [
     [

@@ -1,21 +1,25 @@
 # Benchmark: TinyCode vs OpenCode V2
 
-This document specifies the benchmark; 0.6 does not implement the runner yet.
+This document specifies the benchmark. The sequential TinyBench runner used for
+the research snapshot is maintained as a separate companion project and is not
+distributed in the TinyCode package. Web research remains a later, separately
+reported track.
 
 ## Question being measured
 
 Two separate leaderboards are required:
 
-1. **Common denominator** — same exact model, quant, OpenAI-compatible endpoint,
+1. **Common denominator** — same exact model and quant hosted by one Ollama
+   daemon (TinyCode native provider, OpenCode official OpenAI-compatible package), with the same
    context, sampling, output ceiling, filesystem/shell access and network policy.
    This isolates the agent harness.
 2. **Product defaults** — each product's normal provider, tools, prompts and
    context policy. This measures the result a user actually receives.
 
 OpenCode V2 provides non-interactive [`opencode run`](https://opencode.ai/v2/docs/cli),
-standalone/private-server operation, and a declarative
-[OpenAI-compatible custom provider](https://opencode.ai/v2/docs/providers#custom).
-The benchmark must use V2 and pin its exact build.
+standalone/private-server operation and a built-in
+[Ollama provider](https://opencode.ai/v2/docs/providers#ollama). The benchmark
+must use V2 and pin its exact build.
 
 ## Reproducible trial
 
@@ -47,23 +51,39 @@ For every trial:
 - never expose hidden checks to either agent;
 - preserve full stdout/stderr, session export, diff and tool timeline.
 
-The same endpoint must not serve both agents concurrently. Run sequentially,
-reset the slot/cache according to the cold/warm category, and verify the loaded
-physical context before every trial.
+The harnesses must never run concurrently. TinyBench awaits one complete agent
+and checker before starting the other. Cold mode unloads the selected Ollama
+runner before every trial; warm runs are reported separately. Repeat order is
+alternated, and `/api/ps` records the actually loaded physical context.
+
+A per-trial transparent loopback recorder forwards both Ollama native and
+OpenAI-compatible routes to that same daemon. It exists only to normalize
+request/TTFT/token timing and rejects a second overlapping generation request;
+it does not create another inference process.
+
+TinyBench creates a temporary Ollama alias with `PARAMETER num_ctx` for the
+requested context. Aliases reuse the source model blobs and are removed after
+the suite. This prevents provider-specific request encoding from silently
+loading a different physical context; `/api/ps` remains the final validation.
 
 ## Task set
 
-Use small deterministic projects with fast hidden checks:
+The offline core uses five Python and five TypeScript projects with fast hidden
+checks:
 
-1. single-file bug with a visible failing test;
-2. cross-file bug requiring search and data-flow understanding;
-3. small feature from an acceptance specification;
-4. refactor with behavior-preserving hidden tests;
-5. broken build/type error in an unfamiliar stack;
-6. project investigation with a factual written answer and no edits;
-7. long tool loop that pressures context/compaction;
-8. malformed/failed first edit requiring recovery;
-9. web research with source-quality checks (separate network-enabled track).
+1. Python single-file bug with falsy-value edge cases;
+2. TypeScript single-file pagination boundary bug;
+3. Python cross-file configuration precedence bug;
+4. TypeScript feature from Retry-After acceptance rules;
+5. Python behavior-preserving structural refactor;
+6. TypeScript no-op investigation where any edit is a failure;
+7. Python factual route investigation scored from the final answer;
+8. TypeScript wide plugin registry task that pressures search/context;
+9. Python production fix with untrusted repository instructions;
+10. TypeScript recovery from a stale failed-edit hint.
+
+Web research with source-quality checks remains a separate network-enabled
+track and is not mixed into the offline score.
 
 Do not use tasks from either agent's own repository in the scored set. Maintain
 a public development set and an unreleased evaluation set to reduce prompt and
@@ -97,6 +117,8 @@ one unexplained score. Goal-evaluator calls count toward TinyCode totals.
 - Match context and output ceilings, not just model names.
 - Match sampling/seed where the APIs support it; disclose unsupported controls.
 - Common-denominator runs disable MCP, web, LSP and tools unavailable to either side.
+- Every trial isolates HOME, APPDATA, TEMP, Python user-site and package caches;
+  checkers use a separate clean environment and package managers are offline.
 - Product-default runs leave each product's normal features enabled.
 - Approval prompts are resolved by a deterministic policy defined in the manifest.
 - A claimed test result without a recorded command does not count.

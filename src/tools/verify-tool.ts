@@ -25,9 +25,15 @@ async function detect(cwd: string, mode: string): Promise<Check[]> {
       if (mode === "full" && scripts.build) checks.push({ kind: "build", command: run("build") });
     } catch { /* Other ecosystems may still be detected. */ }
   }
-  const pythonTests = await readdir(path.join(cwd, "tests")).then((entries) => entries.some((name) => name.endsWith(".py")), () => false);
-  if (await exists(path.join(cwd, "pyproject.toml")) || await exists(path.join(cwd, "pytest.ini")) || pythonTests) {
-    checks.push({ kind: "test", command: "python -m pytest -q" });
+  const testsDirectory = path.join(cwd, "tests");
+  const pythonTestFiles = await readdir(testsDirectory).then((entries) => entries.filter((name) => name.endsWith(".py")), () => [] as string[]);
+  if (pythonTestFiles.length) {
+    const pytestConfigured = await exists(path.join(cwd, "pytest.ini"))
+      || await exists(path.join(cwd, "conftest.py"))
+      || await readFile(path.join(cwd, "pyproject.toml"), "utf8").then((text) => /\[tool\.pytest\b|\bpytest\b/i.test(text), () => false)
+      || await Promise.all(pythonTestFiles.map((file) => readFile(path.join(testsDirectory, file), "utf8")))
+        .then((files) => files.some((text) => /(?:^|\n)\s*(?:import\s+pytest\b|from\s+pytest\b)/m.test(text)), () => false);
+    checks.push({ kind: "test", command: pytestConfigured ? "python -m pytest -q" : "python -m unittest discover -s tests -v" });
   }
   if (await exists(path.join(cwd, "Cargo.toml"))) {
     checks.push({ kind: "typecheck", command: "cargo check" }, { kind: "test", command: "cargo test" });

@@ -21,7 +21,7 @@ export class LlamaProvider implements Provider {
   constructor(readonly runtime: LlamaRuntime) {}
 
   async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
-    const models = await this.runtime.catalog.list(signal);
+    const models = (await this.runtime.catalog.list(signal)).filter((model) => model.role !== "draft");
     if (await this.runtime.available() && !this.runtime.owned) {
       try {
         const data = await (await this.runtime.request("/v1/models", undefined, signal, 10_000)).json() as { data?: Array<{ id: string; meta?: { size?: number; n_params?: number } }> };
@@ -31,6 +31,10 @@ export class LlamaProvider implements Provider {
       }
     }
     return models;
+  }
+
+  async listDraftModels(signal?: AbortSignal): Promise<ModelInfo[]> {
+    return (await this.runtime.catalog.list(signal)).filter((model) => model.role === "draft");
   }
 
   async health(): Promise<HealthResult> {
@@ -93,7 +97,7 @@ export class LlamaProvider implements Provider {
     const ctx = Number(options.options?.num_ctx);
     const predict = Number(options.options?.num_predict);
     if (!Number.isInteger(ctx) || ctx < 256 || !Number.isFinite(predict) || predict < 1) throw new Error("llama.cpp generation needs explicit finite num_ctx and num_predict. No history was discarded.");
-    const running = await this.loadModel({ model: options.model, numCtx: ctx, signal: options.signal });
+    const running = await this.loadModel({ model: options.model, numCtx: ctx, signal: options.signal, inference: options.inference });
     if (running.contextLength !== ctx) throw new Error("llama.cpp context differs from the selected budget; apply /context before generating.");
     const allowed = new Set(["temperature", "top_p", "top_k", "min_p", "repeat_penalty", "presence_penalty", "frequency_penalty", "seed", "stop", "repeat_last_n", "dry_multiplier", "dry_base", "dry_allowed_length"]);
     const sampling = Object.fromEntries(Object.entries(options.options ?? {}).filter(([key]) => allowed.has(key)));

@@ -1,4 +1,5 @@
 import type { Usage } from "../types.js";
+import type { InferenceProfileId } from "../inference-profile.js";
 
 export type Role = "user" | "assistant";
 
@@ -79,8 +80,11 @@ export interface SessionMeta {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  /** Hidden from workspace tabs until the user explicitly reopens the session. */
+  tabClosedAt?: number;
   compaction?: SessionCompaction;
   thinking?: string;
+  inferenceProfile?: InferenceProfileId;
   numCtx?: number;
   lastContext?: { inputTokens: number; generatedTokens: number; estimatedTokens: number; outputLimit?: number; stopReason?: string; at: number };
   queuedInputs?: QueuedInput[];

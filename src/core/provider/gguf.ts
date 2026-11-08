@@ -171,7 +171,9 @@ export class GgufCatalog {
       signal?.throwIfAborted();
       const info = await stat(file).catch(() => null);
       if (!info?.isFile() || !await ggufMagic(file)) continue;
-      result.push({ id, name: id.startsWith("ollama-cache/") ? id : path.basename(id), sizeBytes: info.size, modifiedAt: info.mtime.toISOString() });
+      const name = id.startsWith("ollama-cache/") ? id : path.basename(id);
+      const role = /(?:^|[-_. ])(?:mtp|draft)(?:[-_. ]|$)/i.test(`${id} ${name}`) ? "draft" as const : "target" as const;
+      result.push({ id, name, sizeBytes: info.size, modifiedAt: info.mtime.toISOString(), role });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
   }

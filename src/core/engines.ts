@@ -83,6 +83,7 @@ export class LocalEngines implements Provider, LocalRuntime {
     this.config.provider = id as ProviderId;
   }
   listModels(signal?: AbortSignal) { return this.provider.listModels(signal); }
+  listDraftModels(signal?: AbortSignal) { return this.provider.listDraftModels?.(signal) ?? Promise.resolve([]); }
   async getModelDetails(model: string) {
     return this.provider.getModelDetails ? this.provider.getModelDetails(model) : { id: model, name: model, thinking: { modes: ["off"], defaultMode: "off", control: "none" as const } };
   }

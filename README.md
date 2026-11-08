@@ -12,7 +12,7 @@
 
 `llama.cpp` · `Ollama` · `OpenAI-compatible` · `GGUF` · `TUI`
 
-[![version](https://img.shields.io/badge/version-0.6.0-7dd3fc?style=flat-square)](#что-нового-в-060)
+[![version](https://img.shields.io/badge/version-0.7.0-7dd3fc?style=flat-square)](#что-нового-в-070)
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020.11-339933?style=flat-square&logo=node.js&logoColor=white)](#быстрый-старт)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4b5563?style=flat-square)](#быстрый-старт)
 [![license](https://img.shields.io/badge/license-MIT-86efac?style=flat-square)](LICENSE)
@@ -36,6 +36,7 @@ read-before-edit, контроль повторов, durable history, context co
 ## Содержание
 
 - [Быстрый старт](#быстрый-старт)
+- [Что нового в 0.7.0](#что-нового-в-070)
 - [Что нового в 0.6.0](#что-нового-в-060)
 - [Движки и модели](#движки-и-модели)
 - [Agent loop, очередь и goal](#agent-loop-очередь-и-goal)
@@ -97,6 +98,32 @@ GGUF автоматически ищутся в:
 - `LLAMA_CACHE` или `~/.cache/llama.cpp`;
 - каталогах `llama.modelDirs`;
 - локальном Ollama cache — без копирования многогигабайтных blobs.
+
+---
+
+## Что нового в 0.7.0
+
+TinyCode 0.7 ориентирован на локальные coding-модели примерно от 8B,
+а основной оптимизированный путь — Gemma 4 через managed llama.cpp.
+
+- После выбора модели setup последовательно предлагает **thinking** и
+  **inference profile**: Standard, N-gram, MTP 2x/3x/6x/8x.
+- MTP sidecar задаётся отдельно для целевой модели. TinyCode ищет локальные
+  draft GGUF, но никогда не скачивает веса автоматически.
+- Верхняя строка TUI показывает сохранённые сессии текущей рабочей папки как
+  вкладки. Закрытая вкладка не возвращается после перезапуска, но сессия не
+  удаляется и может быть явно открыта через `/sessions`; `+` создаёт новую.
+- Picker-меню используют semantic colors для статусов и профилей; длинные
+  descriptions, metadata и footer-подсказки переносятся, а полные данные
+  выбранного пункта показываются отдельным preview-блоком.
+- `/recommend` использует расширенный каталог моделей 8B–32B и учитывает веса,
+  F16 KV cache, резерв ОС/compute и VRAM/RAM placement.
+- Исследовательские данные существующих прогонов собраны в
+  [`data/model-efficiency.json`](data/model-efficiency.json), но пока не
+  публикуются на сайте как leaderboard.
+
+Полное описание релиза: [`docs/RELEASE_0.7.md`](docs/RELEASE_0.7.md).
+Исходный scope: [`docs/ROADMAP_0.7.md`](docs/ROADMAP_0.7.md).
 
 ---
 
@@ -163,8 +190,9 @@ RAM/VRAM, загрузить модель или перезапустить чу
 
 ### Рекомендации моделей
 
-`/recommend` сравнивает небольшой встроенный каталог с общими RAM/VRAM и
-оценивает модель при контексте не меньше 32k. Результаты делятся на:
+`/recommend` сравнивает встроенный каталог с общими RAM/VRAM и оценивает модель
+при контексте не меньше 32k. В 0.7 каталог расширен до восьми coding и
+agentic моделей размером 8B–32B. Результаты делятся на:
 
 - **VRAM only**;
 - **Hybrid RAM / VRAM**;
@@ -272,6 +300,11 @@ TinyCode делает один bounded cleanup/retry и откатывает con
 `/apply-template` и `/tokenize`; если реальное число токенов не помещается,
 запрос отклоняется без скрытой truncation/context shift.
 
+Строка `model traffic` под ответом суммирует input/output всех model requests
+одного agent turn; это не размер текущего контекста. Footer `ctx` показывает
+активное окно, а `/info` отдельно показывает **Compact pressure** с учётом
+резерва следующего ответа и порог автоматического сжатия.
+
 ---
 
 ## Tools
@@ -335,6 +368,8 @@ tinycode doctor                    диагностика
 | `-m, --model <id>` | модель / путь к GGUF |
 | `--context <n>` | context текущей сессии |
 | `--think <mode>` | режим thinking |
+| `--inference <name>` | `standard`, `ngram`, `mtp-2`, `mtp-3`, `mtp-6`, `mtp-8` |
+| `--draft-model <gguf>` | локальный MTP sidecar для выбранной модели |
 | `--profile <name>` | `auto`, `plan`, `edit`, `full`, `model` |
 | `-y, --yes` | автоматически разрешать approval-команды |
 | `--thinking` | писать reasoning в stderr в one-shot режиме |
@@ -353,6 +388,7 @@ reasoning и approvals идут в stderr.
 | `/goal <task>` | задать цель evaluator; `/goal off` — очистить |
 | `/context [tokens]` | context picker / ручной размер |
 | `/think [mode]` | thinking mode |
+| `/inference [profile]` | Standard, N-gram или Gemma MTP 2x/3x/6x/8x |
 | `/profile [name]` | tool profile |
 | `/new`, `/sessions` | новая / другая сессия |
 | `/retry` | повторить последний user request |
@@ -391,10 +427,21 @@ reasoning и approvals идут в stderr.
     "gpuLayers": "auto",
     "loadMode": "none",
     "fitTargetMiB": 512,
-    "parallel": 1
+    "parallel": 1,
+    "speculativeType": "none"
   }
 }
 ```
+
+`speculativeType` принимает `none`, экспериментальный `ngram-mod` или
+`draft-mtp` для совместимых свежих сборок llama-server. Для MTP также задаются
+`speculativeDraftModel`, `speculativeDraftDevice` (`auto`/`cpu`) и
+`speculativeDraftMax`. N-gram не загружает вторую модель; оба режима должны
+измеряться отдельно от смены runtime.
+
+Предпочтительный интерфейс — `/inference`: выбор хранится отдельно для
+каждой модели и применяется при следующей managed-загрузке. Для one-shot режима
+доступны `--inference <profile>` и `--draft-model <path.gguf>`.
 
 ### Goal evaluator override
 
@@ -517,6 +564,7 @@ npm run build
 npm run smoke
 npm run smoke:tui
 npm pack --dry-run
+node scripts/collect-model-efficiency.mjs D:/TinyBench data/model-efficiency.json
 ```
 
 Smoke tests не скачивают llama.cpp или модели и не запускают реальный inference.
@@ -569,8 +617,10 @@ src/
 
 | Документ | Содержание |
 | --- | --- |
+| [`docs/RELEASE_0.7.md`](docs/RELEASE_0.7.md) | изменения 0.7 |
 | [`docs/RELEASE_0.6.md`](docs/RELEASE_0.6.md) | изменения 0.6 |
 | [`docs/ROADMAP_0.6.md`](docs/ROADMAP_0.6.md) | согласованный roadmap |
+| [`docs/ROADMAP_0.7.md`](docs/ROADMAP_0.7.md) | scope и beta-checklist 0.7 |
 | [`docs/ENGINES.md`](docs/ENGINES.md) | llama.cpp/Ollama lifecycle |
 | [`docs/BENCHMARK_0.6.md`](docs/BENCHMARK_0.6.md) | план benchmark TinyCode/OpenCode V2 |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | слои и инварианты |

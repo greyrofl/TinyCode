@@ -1,4 +1,5 @@
 import type { Usage } from "../types.js";
+import type { InferenceRuntimeOptions } from "../inference-profile.js";
 
 /** auto uses the model default; named levels must come from provider/template metadata. */
 export type ThinkingMode = string;
@@ -37,6 +38,8 @@ export interface ModelInfo {
   family?: string;
   sizeBytes?: number;
   modifiedAt?: string;
+  /** Draft sidecars are discoverable for inference setup, not main model selection. */
+  role?: "target" | "draft";
 }
 
 export interface ChatMessage {
@@ -52,6 +55,8 @@ export interface ChatOptions {
   think?: boolean | string;
   options?: Record<string, unknown>;
   keepAlive?: string;
+  /** Managed local-runtime startup profile; remote providers may ignore it. */
+  inference?: InferenceRuntimeOptions;
   tools?: Array<{
     type: "function";
     function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -65,6 +70,7 @@ export interface RunningModelInfo {
   contextLength: number;
   /** False when an external server does not expose physical allocation telemetry. */
   memoryKnown?: boolean;
+  inferenceProfile?: InferenceRuntimeOptions["profile"];
 }
 
 export interface LoadModelOptions {
@@ -72,6 +78,7 @@ export interface LoadModelOptions {
   numCtx: number;
   keepAlive?: string;
   runnerOptions?: Record<string, unknown>;
+  inference?: InferenceRuntimeOptions;
   signal?: AbortSignal;
 }
 
@@ -95,6 +102,7 @@ export interface Provider {
   readonly id: string;
   readonly name: string;
   listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
+  listDraftModels?(signal?: AbortSignal): Promise<ModelInfo[]>;
   getModelDetails?(model: string): Promise<ModelDetails>;
   getRunningModel?(model: string, signal?: AbortSignal): Promise<RunningModelInfo | null>;
   loadModel?(options: LoadModelOptions): Promise<RunningModelInfo | null>;

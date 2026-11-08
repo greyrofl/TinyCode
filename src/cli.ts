@@ -39,7 +39,7 @@ const COMMANDS = new Set([
   "help",
   "version",
 ]);
-const VALUE_FLAGS = new Set(["model", "provider", "session", "cwd", "think", "context", "profile"]);
+const VALUE_FLAGS = new Set(["model", "provider", "session", "cwd", "think", "context", "profile", "inference", "draft-model"]);
 const SHORT_FLAGS: Record<string, string> = {
   m: "model",
   s: "session",
@@ -145,6 +145,8 @@ Options
   -y, --yes             auto-approve commands and restricted MCP tools
       --thinking        stream thinking to stderr in run mode
       --think <mode>    generation mode: off, on, auto, or a supported named level
+      --inference <name> inference: standard, ngram, mtp-2, mtp-3, mtp-6, mtp-8
+      --draft-model <gguf> local MTP sidecar for this target model
       --context <n>     physical engine context size for this session
       --profile <name>  tools: auto, plan, edit, full; model restores size-based default
       --cwd <dir>       working directory recorded in the session
@@ -232,6 +234,9 @@ async function applySessionFlags(chat: ChatService, parsed: ParsedArgs): Promise
   if (model && chat.currentModel !== model) await chat.setModel(model);
   const thinking = flagValue(parsed, "think");
   if (thinking) await chat.setThinking(thinking);
+  const inference = flagValue(parsed, "inference");
+  const draftModel = flagValue(parsed, "draft-model");
+  if (inference || draftModel) await chat.setInferenceProfile(inference ?? chat.currentInferenceProfile, draftModel);
   const context = flagValue(parsed, "context");
   if (context) await chat.setContextSize(Number(context));
 }
