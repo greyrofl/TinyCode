@@ -1,12 +1,9 @@
 <div align="center">
 
-<pre>
-█████ ███ █   █ █   █  ████  ███  ████  █████
-  █    █  ██  █ █   █ █     █   █ █   █ █
-  █    █  █ █ █  █ █  █     █   █ █   █ ████
-  █    █  █  ██   █   █     █   █ █   █ █
-  █   ███ █   █   █    ████  ███  ████  █████
-</pre>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tinycode-logo-dark.svg">
+  <img src="docs/assets/tinycode-logo-light.svg" alt="TinyCode" width="470">
+</picture>
 
 ### Терминальный coding-агент для локальных моделей
 

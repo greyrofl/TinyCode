@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="470" height="70" viewBox="0 0 470 70" role="img" aria-labelledby="title" shape-rendering="crispEdges">
+  <title id="title">TinyCode</title>
+  <g fill="#181818" transform="scale(10)">
+    <path d="M0 0h5v1H3v6H2V1H0z"/>
+    <path d="M7 0h3v1H9v5h1v1H7V6h1V1H7z"/>
+    <path d="M12 0h1v7h-1z M16 0h1v7h-1z M13 1h1v2h-1z M14 3h1v1h-1z M15 4h1v2h-1z"/>
+    <path d="M18 0h1v2h-1z M22 0h1v2h-1z M19 2h1v1h-1z M21 2h1v1h-1z M20 3h1v4h-1z"/>
+    <path d="M25 0h4v1h-4z M24 1h1v5h-1z M25 6h4v1h-4z"/>
+    <path d="M31 0h3v1h-3z M30 1h1v5h-1z M34 1h1v5h-1z M31 6h3v1h-3z"/>
+    <path d="M36 0h4v1h-4z M36 1h1v5h-1z M40 1h1v5h-1z M36 6h4v1h-4z"/>
+    <path d="M42 0h5v1h-5z M42 1h1v5h-1z M42 3h4v1h-4z M42 6h5v1h-5z"/>
+  </g>
+</svg>
