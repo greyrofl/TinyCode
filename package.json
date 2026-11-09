@@ -1,7 +1,7 @@
 {
   "name": "tinycode-cli",
   "version": "0.7.1",
-  "description": "A terminal coding agent for local models via llama.cpp, Ollama, and compatible APIs",
+  "description": "A lightweight local-first terminal coding agent for capable GGUF models via llama.cpp, Ollama, and compatible APIs",
   "type": "module",
   "bin": {
     "tinycode": "dist/cli.js"
@@ -12,12 +12,25 @@
     "promt.md",
     "compact.md",
     "README.md",
+    "README_RU.md",
     "LICENSE",
     "docs",
     "data"
   ],
   "engines": {
     "node": ">=20.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/greyrofl/TinyCode.git"
+  },
+  "homepage": "https://github.com/greyrofl/TinyCode#readme",
+  "bugs": {
+    "url": "https://github.com/greyrofl/TinyCode/issues"
+  },
+  "author": "greyrofl",
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",
@@ -34,9 +47,18 @@
   "keywords": [
     "cli",
     "ai",
+    "ai-agent",
+    "local-llm",
+    "llama-cpp",
     "ollama",
+    "gguf",
     "coding-agent",
-    "small-models"
+    "terminal-ui",
+    "speculative-decoding",
+    "mcp",
+    "openai-compatible",
+    "qwen",
+    "gemma"
   ],
   "license": "MIT",
   "devDependencies": {
